@@ -86,6 +86,8 @@ class FollowSession:
         return f"pixel coordinates of each image (0,0 = top-left, {self.size},{self.size} = bottom-right)"
 
     def locate(self, obj):
+        if isinstance(obj, dict) and isinstance(obj.get("target"), dict) and "bbox_2d" not in obj:
+            obj = {**obj, **obj["target"]}
         if isinstance(obj, dict) and "bbox_2d" in obj:
             b = obj["bbox_2d"]
             if not (isinstance(b, (list, tuple)) and len(b) == 4 and all(isinstance(t, (int, float)) for t in b)):

@@ -47,6 +47,9 @@ MEASURE = ('- measure: {"view": "V5", "target": "the enhancing lesion near the c
            "axial slice: returns the longest diameter, the perpendicular diameter and their product (RANO), with the "
            'outline drawn. Add "both_times": true to measure the same box on the current and the prior study and get '
            "the change of the product in percent.")
+ONESHOT_REPORT = ('- report: final answer, ends the task. Arguments: {"progression": true or false, "view": "V1", '
+                  '"bbox_2d": [x1, y1, x2, y2], "rationale": "<one sentence>"}. If progression is true, the box (in that '
+                  "view's coordinates, inside one montage tile of the current study) encloses the main progressing lesion.")
 REPORT = ('- report: final answer, ends the task. Arguments: {"progression": true or false, "view": "V7", '
           '"target": "the progressing lesion" (or "bbox_2d"), "rationale": "<one sentence>"}. If progression is '
           "true, the view must be an observed slice of the current study showing the main progressing lesion.")
@@ -62,7 +65,7 @@ def system_prompt(s: FollowSession, max_calls: int) -> str:
             "against the prior MRI. ")
     if s.cond == "oneshot":
         return (head + "Answer from the views given below. " + conv + " You must answer now with a single report "
-                "call.\n\n" + CALL_FORMAT + "\n\nTool:\n" + REPORT + " A box on a montage tile fixes the location.\n\n" + RANO)
+                "call.\n\n" + CALL_FORMAT + "\n\nTool:\n" + ONESHOT_REPORT + "\n\n" + RANO)
     tools = [VIEW] + ([PREDICT] if s.use_wm else []) + [LOCATE_SPEC.replace("the round nodule near the centre", "the enhancing lesion near the centre"), MEASURE, REPORT]
     wm = (" Check the largest world-model changes first, then compare the rest of the brain. Every finding must "
           "rest on observed views.") if s.use_wm else ""

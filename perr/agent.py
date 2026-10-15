@@ -28,6 +28,12 @@ CALL_FORMAT = (
     '{"name": "<tool>", "arguments": {...}}\n</tool_call>'
 )
 
+ONESHOT_REPORT_SPEC = (
+    '- report: your final answer; it ends the task. Arguments: {"present": true or false, "view": "V2", '
+    '"bbox_2d": [x1, y1, x2, y2], "diameter_mm": <number>, "side": "right" or "left"}. The box is in that view\'s '
+    "coordinates and encloses the nodule; on a montage it must lie inside one tile."
+)
+
 REPORT_SPEC = (
     '- report: your final answer; it ends the task. Arguments: {"present": true or false, "view": "V7", '
     '"target": "the nodule you measured" (or "bbox_2d": [x1, y1, x2, y2]), "diameter_mm": <number>, "side": '
@@ -97,7 +103,7 @@ def system_prompt(s: Session, max_calls: int) -> str:
     if s.cond == "oneshot":
         return ("You are reading a chest CT study to answer a clinical question from the views given below. "
                 + conv + " You must answer now with a single report call.\n\n" + CALL_FORMAT + "\n\nTool:\n"
-                + REPORT_SPEC + " A box on a montage tile fixes the location: the tile's slice and the position in it.")
+                + ONESHOT_REPORT_SPEC + " A box on a montage tile fixes the location: the tile's slice and the position in it.")
     tools = [VIEW_SPEC] + ([PREDICT_SPEC] if s.use_wm else []) + [LOCATE_SPEC, READ_MEASURE_SPEC, REPORT_SPEC]
     wm = (" Check the world-model candidates first: open up to four peaks per call with fov_mm 60 (each candidate "
           'then sits at the centre of its view) and measure the round ones with {"peak": n}; afterwards read the '
@@ -183,6 +189,8 @@ async def ground_args(client, model, s, name, args, trace):
 
     async def box_for(vid, target, grow=1.0):
         rec = s.get(vid)
+        if isinstance(target, dict) and isinstance(target.get("bbox_2d"), list):
+            return target["bbox_2d"]
         b = await focused_box(client, model, s, rec, str(target)[:200], trace)
         if b is None:
             raise ToolError(f"The focused reader did not find {str(target)[:80]!r} on {vid}.")

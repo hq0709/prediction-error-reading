@@ -70,6 +70,8 @@ class Session:
 
     def locate(self, obj) -> tuple[float, float, tuple | None]:
         """Read a location given as {"bbox_2d": [x1, y1, x2, y2]} (preferred) or {"point": [x, y]}."""
+        if isinstance(obj, dict) and isinstance(obj.get("target"), dict) and "bbox_2d" not in obj:
+            obj = {**obj, **obj["target"]}
         if isinstance(obj, dict) and "bbox_2d" in obj:
             b = obj["bbox_2d"]
             if not (isinstance(b, (list, tuple)) and len(b) == 4 and all(isinstance(t, (int, float)) for t in b)):
@@ -518,7 +520,7 @@ class Session:
         if present:
             pts = args.get("points")
             if pts is None and "view" in args:
-                pts = [{k: args[k] for k in ("view", "bbox_2d", "point") if k in args}]
+                pts = [{k: args[k] for k in ("view", "bbox_2d", "point", "target") if k in args}]
             zyx, used = self.resolve_points(pts)
             if zyx is None:
                 raise ToolError("These points do not fix a 3-D location.")
