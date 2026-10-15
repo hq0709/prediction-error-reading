@@ -107,12 +107,13 @@ def system_prompt(s: Session, max_calls: int) -> str:
                 + conv + " You must answer now with a single report call.\n\n" + CALL_FORMAT + "\n\nTool:\n"
                 + ONESHOT_REPORT_SPEC + " A box on a montage tile fixes the location: the tile's slice and the position in it.")
     tools = [VIEW_SPEC] + ([PREDICT_SPEC] if s.use_wm else []) + [LOCATE_SPEC, READ_MEASURE_SPEC, REPORT_SPEC]
-    wm = (' Start with measure {"peaks": [1, 2, 3, 4, 5]}: you get every world-model candidate\'s size and '
-          "outline in one table and one picture. Judge each outline: a nodule is a compact round or oval blob; a "
-          "vessel continues as a tube beyond the outline (or the outline gives a warning); chest wall sits on the "
-          'edge of the lung. Report the largest real nodule with {"peak": n} and its equivalent diameter. If no '
-          "candidate is a real nodule, read the slabs for anything the world model missed. Every finding must rest "
-          "on observed views.") if s.use_wm else ""
+    wm = (' Start with measure {"peaks": [1, 2, 3, 4, 5]}: you get every world-model candidate\'s size and a row '
+          "of three views through it (axial with the measured outline, coronal, sagittal). A nodule is a compact "
+          "blob that is round in all three planes; a vessel is a tube in at least one plane (or its outline gives a "
+          "warning); chest wall sits on the edge of the lung. Report the largest candidate that is a nodule with "
+          '{"present": true, "peak": n, "diameter_mm": <its equivalent diameter>, "side": ...}; always report a '
+          "candidate by its peak number. Answer present: false only if every candidate is clearly a vessel or wall "
+          "and the slabs show no nodule either.") if s.use_wm else ""
     zs = np.nonzero(np.asarray(s.s.lung).any(axis=(1, 2)))[0]
     protocol = READING_PROTOCOL.format(lo=int(zs.min()), hi=int(zs.max()))
     return ("You are reading a chest CT study to answer a clinical question. A viewer holds the full study "

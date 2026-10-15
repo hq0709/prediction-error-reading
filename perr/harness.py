@@ -409,35 +409,60 @@ class Session:
         g = Geom("axial", int(round(z)), 0, "lung", self.fov_box("axial", x, y, 60), self.size)
         return self.add("observed", f"CT centred on world-model peak {n}", g, self.render_observed(g))
 
+    def _plane_tile(self, plane: str, zyx, fov: float, tile: int, label: str) -> Image.Image:
+        z, y, x = zyx
+        Z = self.s.shape[0]
+        idx = {"axial": z, "coronal": y, "sagittal": x}[plane]
+        c, r = {"axial": (x, y), "coronal": (x, Z - 1 - z), "sagittal": (y, Z - 1 - z)}[plane]
+        g = Geom(plane, int(round(idx)), 0, "lung", self.fov_box(plane, c, r, fov), tile)
+        img = Image.open(io.BytesIO(self.render_observed(g))).convert("RGB")
+        d = ImageDraw.Draw(img)
+        d.rectangle([0, 0, 8 * len(label) + 6, 14], fill=(0, 0, 0))
+        d.text((3, 1), label, fill=(255, 255, 0))
+        m = tile // 2
+        d.line([(m - 14, m), (m - 6, m)], fill=(255, 0, 255))
+        d.line([(m + 6, m), (m + 14, m)], fill=(255, 0, 255))
+        return img
+
     def _measure_peaks(self, peaks):
-        """Measure several world-model candidates in one call: a table plus one picture of all outlines."""
+        """Measure several world-model candidates in one call. Each candidate gets a row of three 40 mm views
+        through its exact address (axial with the measured outline, coronal, sagittal): a nodule is round in all
+        three planes, a vessel is a tube in at least one."""
         if not self.use_wm or not self.peaks:
             raise ToolError("There are no world-model peaks in this setting.")
         if not isinstance(peaks, list) or not 1 <= len(peaks) <= 6:
             raise ToolError('"peaks" must list 1-6 peak numbers.')
-        rows, tiles, recs = [], [], []
+        rows, strips, recs = [], [], []
         centre = self.from_disp(self.size / 2, self.size / 2)
+        tile = 200
         for n in peaks:
             n = int(n)
             if not 1 <= n <= len(self.peaks):
                 raise ToolError(f"peak must be 1-{len(self.peaks)}.")
             rec = self._peak_view(n)
             res, ann = self._measure_seed(rec, {"point": centre})
-            row = {"peak": n, "view": rec.vid, "slice": rec.geom.index, **{k: v for k, v in json.loads(res).items() if k not in ("view", "drawn_on")}}
+            row = {"peak": n, "view": rec.vid, "slice": rec.geom.index,
+                   **{k: v for k, v in json.loads(res).items() if k not in ("view", "drawn_on")}}
             rows.append(row)
             recs.append(rec)
-            img = Image.open(io.BytesIO((ann[0] if ann else rec).png)).convert("RGB").resize((256, 256))
-            ImageDraw.Draw(img).rectangle([0, 0, 64, 16], fill=(0, 0, 0))
-            ImageDraw.Draw(img).text((3, 2), f"peak {n}", fill=(255, 255, 0))
-            tiles.append(img)
-        cols = 3 if len(tiles) > 4 else 2
-        rows_n = (len(tiles) + cols - 1) // cols
-        sheet = Image.new("RGB", (256 * cols, 256 * rows_n))
-        for i, t in enumerate(tiles):
-            sheet.paste(t, ((i % cols) * 256, (i // cols) * 256))
+            zyx = tuple(self.peaks[n - 1][:3])
+            ax = Image.open(io.BytesIO((ann[0] if ann else rec).png)).convert("RGB")
+            ax = ax.crop((ax.width // 6, ax.height // 6, ax.width * 5 // 6, ax.height * 5 // 6)).resize((tile, tile))
+            d = ImageDraw.Draw(ax)
+            lab = f"peak {n} axial"
+            d.rectangle([0, 0, 8 * len(lab) + 6, 14], fill=(0, 0, 0))
+            d.text((3, 1), lab, fill=(255, 255, 0))
+            strip = Image.new("RGB", (tile * 3 + 8, tile), (40, 40, 40))
+            strip.paste(ax, (0, 0))
+            strip.paste(self._plane_tile("coronal", zyx, 40, tile, f"peak {n} coronal"), (tile + 4, 0))
+            strip.paste(self._plane_tile("sagittal", zyx, 40, tile, f"peak {n} sagittal"), (2 * tile + 8, 0))
+            strips.append(strip)
+        sheet = Image.new("RGB", (tile * 3 + 8, (tile + 4) * len(strips)), (40, 40, 40))
+        for i, st in enumerate(strips):
+            sheet.paste(st, (0, i * (tile + 4)))
         g0 = recs[0].geom
-        pic = self.add("observed", "measured outlines of the candidates (green), one tile per peak, 60 mm each", g0,
-                       png(np.asarray(sheet)), None)
+        pic = self.add("observed", "candidates, one row per peak: axial with the measured outline (green), coronal, "
+                       "sagittal; 40 mm each, magenta ticks mark the exact address", g0, png(np.asarray(sheet)), None)
         pic.geom = Geom(g0.plane, None, 0, g0.window, g0.box, g0.size, extra={"sheet": True})
         return json.dumps({"candidates": rows, "picture": pic.vid}), [pic]
 
