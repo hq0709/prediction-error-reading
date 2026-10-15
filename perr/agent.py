@@ -60,7 +60,9 @@ PREDICT_SPEC = (
     "that is neither tube nor sheet). Arguments: {\"question\": \"...\", \"views\": [\"V5\"]} (1-2 ids). A hot spot is "
     "a candidate to check, not a finding: vessels seen end-on or branching can also look compact on one slice.\n"
     '  In view items, "at" also accepts {"peak": n}: the n-th largest world-model error listed in the first message. '
-    'measure also accepts {"peak": n}: it outlines the structure at that exact address and shows it.'
+    'measure also accepts {"peak": n}, or {"peaks": [1, 2, ...]} for several candidates at once: it outlines the '
+    "structure at each exact address and returns sizes plus one picture of all outlines. report accepts "
+    '{"present": true, "peak": n, "diameter_mm": ..., "side": ...}.'
 )
 
 LOCATE_SPEC = (
@@ -105,9 +107,12 @@ def system_prompt(s: Session, max_calls: int) -> str:
                 + conv + " You must answer now with a single report call.\n\n" + CALL_FORMAT + "\n\nTool:\n"
                 + ONESHOT_REPORT_SPEC + " A box on a montage tile fixes the location: the tile's slice and the position in it.")
     tools = [VIEW_SPEC] + ([PREDICT_SPEC] if s.use_wm else []) + [LOCATE_SPEC, READ_MEASURE_SPEC, REPORT_SPEC]
-    wm = (" Check the world-model candidates first: open up to four peaks per call with fov_mm 60 (each candidate "
-          'then sits at the centre of its view) and measure the round ones with {"peak": n}; afterwards read the '
-          "slabs for anything the world model missed. Locate and measure every finding on observed views.") if s.use_wm else ""
+    wm = (' Start with measure {"peaks": [1, 2, 3, 4, 5]}: you get every world-model candidate\'s size and '
+          "outline in one table and one picture. Judge each outline: a nodule is a compact round or oval blob; a "
+          "vessel continues as a tube beyond the outline (or the outline gives a warning); chest wall sits on the "
+          'edge of the lung. Report the largest real nodule with {"peak": n} and its equivalent diameter. If no '
+          "candidate is a real nodule, read the slabs for anything the world model missed. Every finding must rest "
+          "on observed views.") if s.use_wm else ""
     zs = np.nonzero(np.asarray(s.s.lung).any(axis=(1, 2)))[0]
     protocol = READING_PROTOCOL.format(lo=int(zs.min()), hi=int(zs.max()))
     return ("You are reading a chest CT study to answer a clinical question. A viewer holds the full study "

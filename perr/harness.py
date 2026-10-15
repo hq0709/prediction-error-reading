@@ -333,6 +333,8 @@ class Session:
             raise ToolError(f"{rec.vid} is a predicted view; read and measure work on observed views only.")
         if rec.geom.extra.get("montage"):
             raise ToolError(f"{rec.vid} is a montage; open the slice first.")
+        if rec.geom.extra.get("sheet"):
+            raise ToolError(f"{rec.vid} is a contact sheet; use the per-peak views listed with it.")
         return rec
 
     def tool_read(self, args):
@@ -369,6 +371,8 @@ class Session:
     def tool_measure(self, args):
         """Two modes: a caliper between two points, or a seed point that a mechanical region grow
         (threshold at half the local maximum, 3-D connected component) turns into an outline."""
+        if "peaks" in args:
+            return self._measure_peaks(args["peaks"])
         if "peak" in args:
             if not self.use_wm or not self.peaks:
                 raise ToolError("There are no world-model peaks in this setting.")
@@ -378,8 +382,7 @@ class Session:
             z, y, x, _ = self.peaks[n - 1]
             g = Geom("axial", int(round(z)), 0, "lung", self.fov_box("axial", x, y, 60), self.size)
             rec = self.add("observed", "CT", g, self.render_observed(g))
-            res, recs = self._measure_seed(rec, {"bbox_2d": [*self.from_disp(self.size / 2 - 1, self.size / 2 - 1),
-                                                             *self.from_disp(self.size / 2 + 1, self.size / 2 + 1)]})
+            res, recs = self._measure_seed(rec, {"point": self.from_disp(self.size / 2, self.size / 2)})
             return res, [rec] + recs
         rec = self._single(self.get(args.get("view")))
         g = rec.geom
@@ -400,6 +403,43 @@ class Session:
                 dd.ellipse([u - 4, v - 4, u + 4, v + 4], outline=(0, 255, 0), width=2)
         ann = self._annotated(rec, draw, f"CT with the caliper drawn ({d:.1f} mm)")
         return json.dumps({"view": rec.vid, "distance_mm": round(d, 1), "drawn_on": ann.vid}), [ann]
+
+    def _peak_view(self, n: int) -> ViewRecord:
+        z, y, x, _ = self.peaks[n - 1]
+        g = Geom("axial", int(round(z)), 0, "lung", self.fov_box("axial", x, y, 60), self.size)
+        return self.add("observed", f"CT centred on world-model peak {n}", g, self.render_observed(g))
+
+    def _measure_peaks(self, peaks):
+        """Measure several world-model candidates in one call: a table plus one picture of all outlines."""
+        if not self.use_wm or not self.peaks:
+            raise ToolError("There are no world-model peaks in this setting.")
+        if not isinstance(peaks, list) or not 1 <= len(peaks) <= 6:
+            raise ToolError('"peaks" must list 1-6 peak numbers.')
+        rows, tiles, recs = [], [], []
+        centre = self.from_disp(self.size / 2, self.size / 2)
+        for n in peaks:
+            n = int(n)
+            if not 1 <= n <= len(self.peaks):
+                raise ToolError(f"peak must be 1-{len(self.peaks)}.")
+            rec = self._peak_view(n)
+            res, ann = self._measure_seed(rec, {"point": centre})
+            row = {"peak": n, "view": rec.vid, "slice": rec.geom.index, **{k: v for k, v in json.loads(res).items() if k not in ("view", "drawn_on")}}
+            rows.append(row)
+            recs.append(rec)
+            img = Image.open(io.BytesIO((ann[0] if ann else rec).png)).convert("RGB").resize((256, 256))
+            ImageDraw.Draw(img).rectangle([0, 0, 64, 16], fill=(0, 0, 0))
+            ImageDraw.Draw(img).text((3, 2), f"peak {n}", fill=(255, 255, 0))
+            tiles.append(img)
+        cols = 3 if len(tiles) > 4 else 2
+        rows_n = (len(tiles) + cols - 1) // cols
+        sheet = Image.new("RGB", (256 * cols, 256 * rows_n))
+        for i, t in enumerate(tiles):
+            sheet.paste(t, ((i % cols) * 256, (i // cols) * 256))
+        g0 = recs[0].geom
+        pic = self.add("observed", "measured outlines of the candidates (green), one tile per peak, 60 mm each", g0,
+                       png(np.asarray(sheet)), None)
+        pic.geom = Geom(g0.plane, None, 0, g0.window, g0.box, g0.size, extra={"sheet": True})
+        return json.dumps({"candidates": rows, "picture": pic.vid}), [pic]
 
     def _measure_seed(self, rec: ViewRecord, args):
         g = rec.geom
@@ -503,6 +543,8 @@ class Session:
             rec = self.get(p.get("view"))
             if not rec.evidence:
                 raise ToolError(f"{rec.vid} is a predicted view; a finding must be located on an observed view.")
+            if rec.geom.extra.get("sheet"):
+                raise ToolError(f"{rec.vid} is a contact sheet; report on a per-peak view or with {{\"peak\": n}}.")
             u, v, _ = self.locate(p)
             coords.append(to_voxel(rec.geom, u, v, self.s.shape))
             used.append(rec.vid)
@@ -517,7 +559,16 @@ class Session:
         if not isinstance(present, bool):
             raise ToolError('"present" must be true or false.')
         zyx, used = (None, [])
-        if present:
+        if present and "peak" in args:
+            if not self.use_wm or not self.peaks:
+                raise ToolError("There are no world-model peaks in this setting.")
+            n = int(args["peak"])
+            if not 1 <= n <= len(self.peaks):
+                raise ToolError(f"peak must be 1-{len(self.peaks)}.")
+            rec = self._peak_view(n)
+            zyx, used = tuple(self.peaks[n - 1][:3]), [rec.vid]
+            present = True
+        elif present:
             pts = args.get("points")
             if pts is None and "view" in args:
                 pts = [{k: args[k] for k in ("view", "bbox_2d", "point", "target") if k in args}]
