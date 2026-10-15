@@ -287,14 +287,17 @@ async def run_episode(client, model: str, s, max_calls: int = 20, max_ctx_images
         step = {"assistant": text}
         parsed = parse_call(text)
         if parsed is None:
+            # some models think in one turn and act in the next: tolerate up to 2 turns without a call in a row
             trace["invalid"] += 1
+            trace["streak"] = trace.get("streak", 0) + 1
             step["error"] = "no tool call"
             trace["steps"].append(step)
-            if trace["invalid"] >= 3:
+            if trace["streak"] >= 3 or trace["invalid"] >= 12:
                 break
             messages.append({"role": "user", "content": [{"type": "text", "text":
-                             "No valid tool call found. Reply with exactly one <tool_call>{...}</tool_call>."}]})
+                             "Now call one tool: reply with exactly one <tool_call>{...}</tool_call>."}]})
             continue
+        trace["streak"] = 0
         name, args = parsed
         step["call"] = {"name": name, "arguments": args}
         trace["calls"] += 1
