@@ -201,3 +201,24 @@ max P(yes) (0.974-1.000 vs 0.949-0.974 for WM x reader there). Final reader `run
 | M3D-LaMed / Hulu-Med-14B / MedGemma-1.5 | 0.08 / 0.00 / 0.00 | 0.14 / 0.04 / 0.00 |
 
 *trained on most of the MSD evaluation cases.
+
+## One reader for all three tasks (final reader, 2026-10-16)
+
+`runs_reader/q8_joint3`: Qwen3-VL-8B, LoRA on language + vision, trained once on the union of the lung (final
+candidates, no measurement text), liver (MSD pool + CRLM, two-row strips) and disease-course training sets. Chosen over
+the per-task readers on each task's own validation rows (AUROC lung 0.986 vs 0.964, liver 0.998 vs 0.998, course 0.935
+vs 0.939). Per-task rules as chosen before: lung WM x reader, liver and course max P(yes).
+
+| Task (evaluation) | per-task reader | **one reader** | oracle |
+|---|---|---|---|
+| Lung nodules >= 6 mm, fresh1 / fresh2 | 0.84 / 0.85 | **0.87 / 0.88** | 0.94 / 0.96 |
+| Liver tumours >= 10 mm, MSD | 0.85 | 0.83 | 0.87 |
+| Liver tumours, HCC-TACE-Seg (external) | 0.73 | 0.75 | 0.83 |
+| New or grown lesions, autoPET pairs | 0.80 | 0.80 | 0.90 |
+
+One reader, lung: largest nodule 0.66 / 0.73, diameter MAE 1.5 / 1.9 mm, side 0.88 / 0.91, candidate AUROC 0.975 /
+0.977. Disease course: lesion recall 0.53, progression AUROC 0.89 (prior findings only 0.80, world model only 0.20).
+
+Disease course, three-fold cross-validation over the 240 training patients (each fold's world model and reader trained
+without the fold's patients, on 2/3 of the data): 272 pairs, 105 with a target: hit 0.59 (folds 0.74 / 0.53 / 0.53),
+oracle 0.85, progression AUROC 0.84 (0.90 / 0.78 / 0.86). The official-split 0.80 rests on 20 pairs and is optimistic.
