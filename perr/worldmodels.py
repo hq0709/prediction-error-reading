@@ -119,6 +119,43 @@ class Continuity3D:
         return out
 
 
+class IntensityPeaks:
+    """No world model (ablation): candidates are the densest points of the lung field after smoothing, with the
+    same non-maximum suppression as ShapePrior. Nothing here says which dense structures normal anatomy explains."""
+
+    name = "intensity"
+
+    def __init__(self, sigma_mm: float = 1.5, cap_hu: float = 200.0):
+        self.sigma, self.cap = sigma_mm, cap_hu
+        self.tag = f"int_{sigma_mm:g}_cap{int(cap_hu)}"
+
+    def peaks(self, study, k: int = 10, nms_mm: float = 10.0):
+        pp = f"{CACHE}/{study.case_id}.{self.tag}.peaks.npy"
+        if os.path.exists(pp):
+            return [tuple(p) for p in np.load(pp).tolist()]
+        dom = np.asarray(lung_domain(study)) > 0
+        zz = np.nonzero(dom.any(axis=(1, 2)))[0]
+        yy = np.nonzero(dom.any(axis=(0, 2)))[0]
+        xx = np.nonzero(dom.any(axis=(0, 1)))[0]
+        o = (zz.min(), yy.min(), xx.min())
+        sl = (slice(zz.min(), zz.max() + 1), slice(yy.min(), yy.max() + 1), slice(xx.min(), xx.max() + 1))
+        V = np.clip(np.asarray(study.vol)[sl].astype(np.float32), -1000, self.cap)
+        V = ndimage.gaussian_filter(V, self.sigma / np.array(study.spacing, float))
+        W = np.where(dom[sl], V + 1001.0, 0.0).astype(np.float32)
+        r = [max(1, int(np.ceil(nms_mm / s))) for s in study.spacing]
+        out = []
+        for _ in range(k):
+            i = int(np.argmax(W))
+            z, y, x = np.unravel_index(i, W.shape)
+            v = float(W[z, y, x])
+            if v <= 0:
+                break
+            out.append((float(z + o[0]), float(y + o[1]), float(x + o[2]), v))
+            W[max(0, z - r[0]):z + r[0] + 1, max(0, y - r[1]):y + r[1] + 1, max(0, x - r[2]):x + r[2] + 1] = 0
+        np.save(pp, np.array(out, np.float32).reshape(-1, 4))
+        return out
+
+
 class ShapePrior:
     """Lung anatomy is locally a tube (vessels, airways) or a sheet (fissures, pleura). The prediction
     error at a voxel is how far its local shape departs from both: the Hessian blob measure of Li et al.
@@ -189,6 +226,23 @@ class ShapePrior:
             out.append((float(z), float(y), float(x), v))
             W[max(0, z - r[0]):z + r[0] + 1, max(0, y - r[1]):y + r[1] + 1, max(0, x - r[2]):x + r[2] + 1] = 0
         np.save(pp, np.array(out, np.float32).reshape(-1, 4))
+        return out
+
+    def top(self, study, k: int, nms_mm: float = 10.0):
+        """The top-k peaks for any k (the cached list holds 10; the first 10 here are the same)."""
+        if k <= 10:
+            return self.peaks(study)[:k]
+        W = np.asarray(self.error_volume(study)).astype(np.float32)
+        r = [max(1, int(np.ceil(nms_mm / s))) for s in study.spacing]
+        out = []
+        for _ in range(k):
+            i = int(np.argmax(W))
+            z, y, x = np.unravel_index(i, W.shape)
+            v = float(W[z, y, x])
+            if v <= 0:
+                break
+            out.append((float(z), float(y), float(x), v))
+            W[max(0, z - r[0]):z + r[0] + 1, max(0, y - r[1]):y + r[1] + 1, max(0, x - r[2]):x + r[2] + 1] = 0
         return out
 
     def scale(self, study) -> float:
