@@ -24,12 +24,12 @@ from perr.autopet import load_pair, pairs
 from scipy import ndimage as ndi
 
 from perr.context_wm import error_map, peaks_from_error
-from perr.course_candidates import QUESTION, course_strips, selected_targets
+from perr.course_candidates import QUESTION, QUESTION_OUTLINE, course_strips, selected_targets
 from perr.course_wm import H, ISO, load_iso, norm, to_original
 
 OUT = "/raid/home/CAMCA/hj880/perr/data/course_reader"
 MIN_DIAM = 10.0
-K, PROPOSAL, TAG, SIGMA, SIGN, GT, HISTORY = 10, "learned", "cnll", 3.0, "pos", False, True
+K, PROPOSAL, TAG, SIGMA, SIGN, GT, HISTORY, OUTLINE = 10, "learned", "cnll", 3.0, "pos", False, True, False
 
 
 def prior_findings(P):
@@ -92,11 +92,13 @@ def work(key):
         P = load_pair(key)
         if HISTORY:
             cands = with_history(P, key, K)
-            rows = [dict(r, source=c["source"]) for r, c in zip(course_strips(P, [c["zyx"] for c in cands], MIN_DIAM), cands)]
+            rows = [dict(r, source=c["source"]) for r, c in
+                    zip(course_strips(P, [c["zyx"] for c in cands], MIN_DIAM, prior_outline=OUTLINE), cands)]
         else:
-            rows = [dict(r, source="wm") for r in course_strips(P, proposal_top(key, K), MIN_DIAM)]
+            rows = [dict(r, source="wm") for r in course_strips(P, proposal_top(key, K), MIN_DIAM, prior_outline=OUTLINE)]
         if GT:
-            rows += [dict(r, source="gt") for r in course_strips(P, gt_points(P, np.random.default_rng(zlib.crc32(key.encode()))), MIN_DIAM)]
+            rows += [dict(r, source="gt") for r in course_strips(P, gt_points(P, np.random.default_rng(zlib.crc32(key.encode()))),
+                                                                 MIN_DIAM, prior_outline=OUTLINE)]
         out = []
         t, sel = P.targets, selected_targets(P.targets, MIN_DIAM)
         small = set(int(v) for v in t.fu_label) - set(int(v) for v in sel.fu_label) if len(t) else set()
@@ -109,7 +111,7 @@ def work(key):
             path = f"{OUT}/img/{key}_{r['source']}{r['peak']}.png"
             r.pop("image").save(path)
             out.append({**r, "uid": key, "image": path, "small": bool(on_small), "label": int(r["label"] == "target"),
-                        "lesion": r["label"] == "lesion", "question": QUESTION})
+                        "lesion": r["label"] == "lesion", "question": QUESTION_OUTLINE if OUTLINE else QUESTION})
         return out
     except Exception as e:
         return [{"uid": key, "error": repr(e)[:300]}]
@@ -129,12 +131,13 @@ if __name__ == "__main__":
     ap.add_argument("--sigma", type=float, default=3.0, help="smoothing in 1.5 mm voxels (fixed on the dev pairs)")
     ap.add_argument("--sign", choices=["pos", "neg", "both"], default="pos")
     ap.add_argument("--no-history", action="store_true", help="world-model addresses only (no prior findings)")
+    ap.add_argument("--outline", action="store_true", help="outline the baseline's annotated lesions on both rows")
     ap.add_argument("--k", type=int, default=10)
     ap.add_argument("--out", default=OUT)
     ap.add_argument("--keys", help="evaluation pair keys (default: validation + test pairs)")
     a = ap.parse_args()
     K, PROPOSAL, TAG, SIGMA, SIGN, OUT = a.k, a.proposal, a.tag, a.sigma, a.sign, os.path.abspath(a.out)
-    HISTORY = not a.no_history
+    HISTORY, OUTLINE = not a.no_history, a.outline
     GT = a.part == "pool"
     os.makedirs(f"{OUT}/img", exist_ok=True)
     keys = pairs("train") if a.part == "pool" else (open(a.keys).read().split() if a.keys else pairs("val") + pairs("test"))

@@ -222,3 +222,9 @@ One reader, lung: largest nodule 0.66 / 0.73, diameter MAE 1.5 / 1.9 mm, side 0.
 Disease course, three-fold cross-validation over the 240 training patients (each fold's world model and reader trained
 without the fold's patients, on 2/3 of the data): 272 pairs, 105 with a target: hit 0.59 (folds 0.74 / 0.53 / 0.53),
 oracle 0.85, progression AUROC 0.84 (0.90 / 0.78 / 0.86). The official-split 0.80 rests on 20 pairs and is optimistic.
+
+Prior-finding outlines on the disease-course strips (cyan contour of the registered baseline lesions on both rows):
+better on the 27 validation pairs (hit 0.70 vs 0.60, candidate AUROC 0.956 vs 0.943) but worse on the official
+evaluation pairs (0.70 vs 0.80, AUROC 0.87 vs 0.90). Decided, by a rule fixed beforehand, on the three-fold
+cross-validation over training patients (105 pairs with a target): without outlines hit 0.590 and progression AUROC
+0.836; with outlines 0.581 and 0.750. Not adopted; the final strips have no outlines.

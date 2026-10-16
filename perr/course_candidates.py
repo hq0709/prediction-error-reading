@@ -15,6 +15,12 @@ from scipy import ndimage as ndi
 from .render import plane_image, plane_spacing, sample, window
 
 TILE, GAP, FOV = 200, 4, 60
+QUESTION_OUTLINE = ("Two CT scans of the same patient at one marked address: the top row is the baseline (registered "
+                    "onto the follow-up), the bottom row the follow-up; axial, coronal and sagittal views, 60 mm each, "
+                    "soft-tissue window; magenta ticks mark the address; cyan lines outline the lesions annotated on the "
+                    "baseline, drawn on both rows. Is there a lesion at the marked address in the follow-up that is new "
+                    "(no cyan outline) or has grown beyond its baseline outline (rather than unchanged anatomy, a stable "
+                    "or shrinking lesion, or a registration mismatch)? Answer with one word: yes or no.")
 QUESTION = ("Two CT scans of the same patient at one marked address: the top row is the baseline (registered onto "
             "the follow-up), the bottom row the follow-up; axial, coronal and sagittal views, 60 mm each, soft-tissue "
             "window; magenta ticks mark the address. Is there a lesion at the marked address in the follow-up that is "
@@ -22,15 +28,22 @@ QUESTION = ("Two CT scans of the same patient at one marked address: the top row
             "registration mismatch)? Answer with one word: yes or no.")
 
 
-def _tile(vol, spacing, plane, zyx, label):
+def _tile(vol, spacing, plane, zyx, label, outline=None):
+    """One 60 mm view; with outline (a label volume on the same grid), its boundary drawn in cyan."""
     z, y, x = zyx
     Z = vol.shape[0]
     idx = {"axial": z, "coronal": y, "sagittal": x}[plane]
     c, r = {"axial": (x, y), "coronal": (x, Z - 1 - z), "sagittal": (y, Z - 1 - z)}[plane]
     dr, dc, _ = plane_spacing(plane, spacing)
     h = FOV / 2
-    img = plane_image(vol, plane, int(round(min(max(idx, 0), vol.shape[{"axial": 0, "coronal": 1, "sagittal": 2}[plane]] - 1))))
-    im = Image.fromarray(window(sample(img, (c - h / dc, r - h / dr, c + h / dc, r + h / dr), TILE), "soft")).convert("RGB")
+    i = int(round(min(max(idx, 0), vol.shape[{"axial": 0, "coronal": 1, "sagittal": 2}[plane]] - 1)))
+    box = (c - h / dc, r - h / dr, c + h / dc, r + h / dr)
+    img = plane_image(vol, plane, i)
+    rgb = np.stack([window(sample(img, box, TILE), "soft")] * 3, -1)
+    if outline is not None:
+        m = sample(plane_image(outline, plane, i), box, TILE, fill=0) > 0
+        rgb[m & ~ndi.binary_erosion(m)] = (0, 255, 255)
+    im = Image.fromarray(rgb)
     d = ImageDraw.Draw(im)
     d.rectangle([0, 0, 8 * len(label) + 6, 15], fill=(0, 0, 0))
     d.text((3, 1), label, fill=(255, 255, 0))
@@ -60,15 +73,18 @@ def label_maps(P, min_diam: float, tol_mm: float = 3.0):
     return grow(np.isin(lab, labs) if labs else np.zeros(lab.shape, bool)), grow(lab > 0)
 
 
-def course_strips(P, points, min_diam: float = 10.0) -> list[dict]:
+def course_strips(P, points, min_diam: float = 10.0, prior_outline: bool = False) -> list[dict]:
+    """With prior_outline, the baseline's annotated lesions (registered onto the follow-up) are outlined in cyan on both
+    rows: an observed prior finding, so the reader sees whether the follow-up extends beyond it or is new."""
     T, A = label_maps(P, min_diam)
     fu, bl = np.asarray(P.fu), np.asarray(P.bl)
+    ol = np.asarray(P.bl_lab) if prior_outline else None
     out = []
     for n, (z, y, x, v) in enumerate(points, 1):
         strip = Image.new("RGB", (3 * TILE + 2 * GAP, 2 * TILE + GAP), (40, 40, 40))
         for i, plane in enumerate(("axial", "coronal", "sagittal")):
-            strip.paste(_tile(bl, P.spacing, plane, (z, y, x), f"baseline {plane}"), (i * (TILE + GAP), 0))
-            strip.paste(_tile(fu, P.spacing, plane, (z, y, x), f"follow-up {plane}"), (i * (TILE + GAP), TILE + GAP))
+            strip.paste(_tile(bl, P.spacing, plane, (z, y, x), f"baseline {plane}", ol), (i * (TILE + GAP), 0))
+            strip.paste(_tile(fu, P.spacing, plane, (z, y, x), f"follow-up {plane}", ol), (i * (TILE + GAP), TILE + GAP))
         i = tuple(int(round(c)) for c in (z, y, x))
         inside = all(0 <= i[d] < T.shape[d] for d in range(3))
         label = "target" if inside and T[i] else ("lesion" if inside and A[i] else "none")
