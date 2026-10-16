@@ -228,3 +228,12 @@ better on the 27 validation pairs (hit 0.70 vs 0.60, candidate AUROC 0.956 vs 0.
 evaluation pairs (0.70 vs 0.80, AUROC 0.87 vs 0.90). Decided, by a rule fixed beforehand, on the three-fold
 cross-validation over training patients (105 pairs with a target): without outlines hit 0.590 and progression AUROC
 0.836; with outlines 0.581 and 0.750. Not adopted; the final strips have no outlines.
+
+Selective answering with the final reader (answer only the cases where the chosen candidate's P(yes) is highest):
+
+| Task | accuracy at 50% / 70% / 100% coverage | confidence AUROC |
+|---|---|---|
+| Lung (200 scans) | 0.98 / 0.95 / 0.88 | 0.81 |
+| Liver, MSD (53) | 1.00 / 0.97 / 0.83 | 0.95 |
+| Liver, external HCC-TACE-Seg (93) | 0.96 / 0.94 / 0.75 | 0.90 |
+| Disease course (20 pairs with a target) | 0.90 / 0.93 / 0.80 | 0.83 |
