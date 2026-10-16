@@ -1,10 +1,12 @@
 """Disease-course reader data (autoPET IV Longitudinal-CT): baseline / follow-up strips at the world model's top-K
 addresses, labelled from the lesion masks.
 
-Labels: 1 inside a new or grown lesion >= 10 mm (grown by 3 mm); 0 elsewhere, including stable or shrinking lesions
-and smaller targets (which are skipped in training, as for the liver).
+Labels: 1 inside a selected target (new, or grown to x1.728 volume, >= 10 mm; grown by 3 mm); 0 elsewhere, including
+stable or shrinking lesions and targets below the size or growth bar (those are skipped in training, as for the liver).
+Candidates: every prior finding (the baseline's annotated lesions registered onto the follow-up: the patient's
+history, re-read for growth) and the world model's top-K surprises ("prior" and "wm" rows; --no-history: "wm" only).
 Training pool: pairs of training patients (the world-model dev patients included: they were only held out of the
-world model); "wm" rows at the top-K addresses, plus "gt" rows: four strips per target (centre jittered by up to 3 mm)
+world model); the candidate rows plus "gt" rows: four strips per target (centre jittered by up to 3 mm)
 and one per non-target lesion >= 10 mm (a hard negative). Evaluation: validation and test pairs, "wm" rows only.
 
     python make_course_data.py pool --proposal learned
@@ -19,13 +21,38 @@ from multiprocessing import Pool
 import numpy as np
 
 from perr.autopet import load_pair, pairs
-from perr.context_wm import peaks_from_error
-from perr.course_candidates import QUESTION, course_strips
+from scipy import ndimage as ndi
+
+from perr.context_wm import error_map, peaks_from_error
+from perr.course_candidates import QUESTION, course_strips, selected_targets
 from perr.course_wm import H, ISO, load_iso, norm, to_original
 
 OUT = "/raid/home/CAMCA/hj880/perr/data/course_reader"
 MIN_DIAM = 10.0
-K, PROPOSAL, TAG, SIGMA, SIGN, GT = 10, "learned", "cnll", 2.0, "both", False
+K, PROPOSAL, TAG, SIGMA, SIGN, GT, HISTORY = 10, "learned", "cnll", 3.0, "pos", False, True
+
+
+def prior_findings(P):
+    """The baseline's annotated lesions, registered onto the follow-up grid: the patient's history."""
+    lab = np.asarray(P.bl_lab)
+    ids = [i for i in np.unique(lab) if i]
+    return [tuple(c) for c in ndi.center_of_mass(np.ones(lab.shape, np.uint8), lab, ids)] if ids else []
+
+
+def with_history(P, key, k):
+    """Every prior finding (re-read for growth), then the world model's top surprises not within 10 mm of one. Each
+    address carries the world model's precision-weighted error there, so the selection rule treats both alike."""
+    FU, BL, D, meta = load_iso(key)
+    R = np.load(f"{ISO}/{key}.{TAG}R.npy").astype(np.float32)
+    S = np.load(f"{ISO}/{key}.{TAG}S.npy")
+    W = error_map(R, S, SIGMA, True, "pool")
+    to_iso = lambda zyx: tuple(int(np.clip(round(v), 0, n - 1)) for v, n in
+                               zip((np.asarray(zyx) * meta["spacing"] - meta["lo_mm"]) / H, W.shape))
+    prior = [(*c, float(max(W[to_iso(c)], 1e-6))) for c in prior_findings(P)]
+    sp = np.array(P.spacing)
+    wm = [p for p in proposal_top(key, k)
+          if all(np.linalg.norm((np.array(p[:3]) - np.array(q[:3])) * sp) > 10.0 for q in prior)]
+    return [dict(zyx=p, source="prior") for p in prior] + [dict(zyx=p, source="wm") for p in wm[:k]]
 
 
 def proposal_top(key, k):
@@ -49,9 +76,9 @@ def proposal_top(key, k):
 
 def gt_points(P, rng):
     """Four jittered strips per target >= MIN_DIAM; one per other lesion >= MIN_DIAM on this grid (hard negatives)."""
-    t, les = P.targets, P.lesions
+    t, les = selected_targets(P.targets, MIN_DIAM), P.lesions
     pts = []
-    for r in t[t.diam_mm >= MIN_DIAM].itertuples():
+    for r in t.itertuples():
         for _ in range(4):
             j = rng.uniform(-1, 1, 3) * 3.0 / np.array(P.spacing)
             pts.append((r.fu_z + j[0], r.fu_y + j[1], r.fu_x + j[2], 0.0))
@@ -63,18 +90,22 @@ def gt_points(P, rng):
 def work(key):
     try:
         P = load_pair(key)
-        rows = [dict(r, source="wm") for r in course_strips(P, proposal_top(key, K), MIN_DIAM)]
+        if HISTORY:
+            cands = with_history(P, key, K)
+            rows = [dict(r, source=c["source"]) for r, c in zip(course_strips(P, [c["zyx"] for c in cands], MIN_DIAM), cands)]
+        else:
+            rows = [dict(r, source="wm") for r in course_strips(P, proposal_top(key, K), MIN_DIAM)]
         if GT:
             rows += [dict(r, source="gt") for r in course_strips(P, gt_points(P, np.random.default_rng(zlib.crc32(key.encode()))), MIN_DIAM)]
         out = []
-        t = P.targets
-        small = set(int(v) for v in t[t.diam_mm < MIN_DIAM].fu_label) if len(t) else set()
+        t, sel = P.targets, selected_targets(P.targets, MIN_DIAM)
+        small = set(int(v) for v in t.fu_label) - set(int(v) for v in sel.fu_label) if len(t) else set()
         for r in rows:
             i = tuple(int(round(c)) for c in r["zyx"])
             inb = all(0 <= i[d] < P.shape[d] for d in range(3))
             on_small = inb and int(P.fu_lab[i]) in small
             if GT and on_small and r["label"] != "target":
-                continue                                       # smaller targets: skipped in training
+                continue                                       # targets below the size or growth bar: skipped in training
             path = f"{OUT}/img/{key}_{r['source']}{r['peak']}.png"
             r.pop("image").save(path)
             out.append({**r, "uid": key, "image": path, "small": bool(on_small), "label": int(r["label"] == "target"),
@@ -95,15 +126,18 @@ if __name__ == "__main__":
     ap.add_argument("part", choices=["pool", "eval"])
     ap.add_argument("--proposal", choices=["learned", "nochange"], default="learned")
     ap.add_argument("--tag", default="cnll")
-    ap.add_argument("--sigma", type=float, default=2.0)
-    ap.add_argument("--sign", choices=["pos", "neg", "both"], default="both")
+    ap.add_argument("--sigma", type=float, default=3.0, help="smoothing in 1.5 mm voxels (fixed on the dev pairs)")
+    ap.add_argument("--sign", choices=["pos", "neg", "both"], default="pos")
+    ap.add_argument("--no-history", action="store_true", help="world-model addresses only (no prior findings)")
     ap.add_argument("--k", type=int, default=10)
     ap.add_argument("--out", default=OUT)
+    ap.add_argument("--keys", help="evaluation pair keys (default: validation + test pairs)")
     a = ap.parse_args()
     K, PROPOSAL, TAG, SIGMA, SIGN, OUT = a.k, a.proposal, a.tag, a.sigma, a.sign, os.path.abspath(a.out)
+    HISTORY = not a.no_history
     GT = a.part == "pool"
     os.makedirs(f"{OUT}/img", exist_ok=True)
-    keys = pairs("train") if a.part == "pool" else pairs("val") + pairs("test")
+    keys = pairs("train") if a.part == "pool" else (open(a.keys).read().split() if a.keys else pairs("val") + pairs("test"))
     keys = [k for k in keys if not np.load(f"{ISO}/{k}.meta.npy", allow_pickle=True).item().get("empty")]
     with Pool(16) as p:
         res = p.map(work, keys, chunksize=1)
@@ -119,7 +153,7 @@ if __name__ == "__main__":
         for name, rs in parts.items():
             write(f"{OUT}/{name}.jsonl", rs)
     for name, rs in parts.items():
-        for src in ("wm", "gt"):
+        for src in ("prior", "wm", "gt"):
             sub = [r for r in rs if r["source"] == src]
             if sub:
                 print(f"{name} {src}: {len(sub)} rows, {sum(r['label'] for r in sub)} positive, "

@@ -13,12 +13,14 @@ import sys
 from multiprocessing import Pool
 
 from perr.context_wm import ContextPrior, build_iso, fuse_rrf
-from perr.liver import QUESTION, LiverPrior, liver_strips
+from perr.liver import CONTEXT_FOV, QUESTION, QUESTION_2SCALE, LiverPrior, liver_strips
 from perr.liver_ext import CACHE, label_at, load_case
 
 CASES = open("sota/eval_liver_ext.txt").read().split()
 PROPOSAL = "liver"
 TAG = os.environ.get("LIVER_TAG", "lnll")
+CONTEXT = os.environ.get("LIVER_CONTEXT") == "1"
+SUFFIX = ("" if TAG == "lnll" else "_" + TAG) + ("_2scale" if CONTEXT else "")
 
 
 def top(s, k=10):
@@ -31,13 +33,13 @@ def top(s, k=10):
 
 def work(case):
     s = load_case(case)
-    out_dir = f"data/liver_ext_reader_{PROPOSAL}{'' if TAG == 'lnll' else '_' + TAG}"
+    out_dir = f"data/liver_ext_reader_{PROPOSAL}{SUFFIX}"
     rows = []
-    for r in liver_strips(s, top(s), label_fn=label_at):
+    for r in liver_strips(s, top(s), label_fn=label_at, context_fov=CONTEXT_FOV if CONTEXT else None):
         path = os.path.abspath(f"{out_dir}/img/{case}_wm{r['peak']}.png")
         r.pop("image").save(path)
         rows.append({**r, "uid": case, "image": path, "source": "wm", "small": r["label"] == "small",
-                     "label": int(r["label"] == "big"), "question": QUESTION})
+                     "label": int(r["label"] == "big"), "question": QUESTION_2SCALE if CONTEXT else QUESTION})
     return rows
 
 
@@ -48,7 +50,7 @@ if __name__ == "__main__":
         print("iso done", len(CASES))
     else:
         PROPOSAL = sys.argv[2]
-        out_dir = f"data/liver_ext_reader_{PROPOSAL}{'' if TAG == 'lnll' else '_' + TAG}"
+        out_dir = f"data/liver_ext_reader_{PROPOSAL}{SUFFIX}"
         os.makedirs(f"{out_dir}/img", exist_ok=True)
         with Pool(24) as p:
             rows = [r for rs in p.map(work, CASES, chunksize=1) for r in rs]

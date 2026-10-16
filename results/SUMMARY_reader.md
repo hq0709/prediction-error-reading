@@ -121,3 +121,83 @@ fused candidates: 0.83 (previous 0.85; oracle 0.85 vs 0.89). Not an improvement.
 | M3D-LaMed-Phi-3-4B | 0.00 | 0.00 | 0.08 | organ-sized boxes |
 | Hulu-Med-14B | 0.00 | 0.00 | 0.00 | prior-driven answers |
 | MedGemma-1.5-4B | 0.00 | 0.00 | 0.00 | centre-of-image answers |
+
+## Final lung configuration (2026-10-16, chosen on the training pool)
+
+Reader input: the three-plane strip without the measurement text (pool cross-fitting, 162 scans, K=10 hit 0.852 vs
+0.821 with the text; the harness measurement is still what the report states). Reader `runs_reader/q8_ctx_nomeas`.
+Rule: WM x reader over the top 10.
+
+| Final pipeline (K=10, WM x reader) | fresh1 | fresh2 |
+|---|---|---|
+| hit (nodule >= 6 mm) | **0.84** | **0.85** |
+| largest nodule | 0.64 | 0.69 |
+| diameter MAE (mm) | 1.5 | 1.8 |
+| side | 0.88 | 0.86 |
+| candidate AUROC | 0.968 | 0.968 |
+
+Selective answering: accuracy 0.98 at 50% coverage, 0.95 at 70%, 0.89 at 90%, 0.84 at 100%.
+Reading budget K = 10 / 20 / 30: 0.84 / 0.84 / 0.83 and 0.85 / 0.85 / 0.82.
+
+Ablations (one component removed; final reader fixed for world-model rows, retrained for reader rows):
+
+| Variant | fresh1 | fresh2 | candidate AUROC |
+|---|---|---|---|
+| Final | 0.84 | 0.85 | 0.968 / 0.968 |
+| Learned world model without precision weighting | 0.61 | 0.63 | 0.977 / 0.977 |
+| Mechanical world model (shape prior) | 0.69 | 0.69 | 0.975 / 0.976 |
+| No world model (densest lung points) | 0.04 | 0.06 | – |
+| No reader training (zero-shot Qwen3-VL-8B) | 0.70 | 0.71 | 0.854 / 0.801 |
+| No reader (world model top-1) | 0.68 | 0.69 | – |
+| Axial view only | 0.82 | 0.85 | 0.951 / 0.952 |
+| LoRA on the language model only | 0.80 | 0.79 | 0.948 / 0.942 |
+| Measurement text added | 0.81 | 0.79 | 0.970 / 0.956 |
+| Larger reader, Qwen3-VL-32B (with measurement text) | 0.83 | 0.81 | 0.966 / 0.959 |
+
+Baselines on the external liver set (HCC-TACE-Seg, 93 cases, clean): SAT-Pro 0.88, VISTA3D 0.85, OmniAbnorm-CT 0.45;
+ours (MSD-trained, fused world model) 0.73. OmniAbnorm-CT on LUNA16: 0.42 / 0.41 (trained on ULS23-LIDC, i.e. LUNA16).
+
+## Disease-course world: autoPET IV Longitudinal-CT (2026-10-16)
+
+Pairs: baseline CT registered onto the follow-up (images only; `perr/autopet.py`, QA median 6.2 mm). Targets: new
+lesions, or lesions grown to x1.728 volume (+20% diameter, RECIST-like), >= 10 mm. Evaluation: the official validation
+and test patients, 64 pairs, 20 with a target (113 target lesions). Training: 272 pairs of 240 patients.
+
+World model (`perr/course_wm.py`, `runs_wm/course_nll`): a 96 mm cube of follow-up CT with its central 36 mm hidden,
+plus the registered baseline cube, predicts the hidden follow-up and its log-variance; trained on cubes that hide no
+target. Validation MSE 0.0013 vs 0.0096 for "follow-up = registered baseline". Configuration (sigma 3 voxels,
+precision-weighted, positive sign, top 10) fixed on 33 dev pairs of training patients. Candidates: every prior finding
+(the baseline's annotated lesions, registered: the patient's history, re-read for growth) plus the world model's top 10.
+Reader: Qwen3-VL-8B LoRA (language + vision) on baseline / follow-up strips (`runs_reader/q8_course_vis`, val AUROC
+0.939). Rule: max P(yes), chosen on 27 validation pairs of training patients (0.60 vs 0.40 for WM x reader).
+
+| Variant (evaluation pairs) | pair hit | oracle | lesion recall | progression AUROC |
+|---|---|---|---|---|
+| **Prior findings + learned world model + trained reader** | **0.80** | 0.90 | 0.58 | 0.90 |
+| Prior findings only + trained reader | 0.80 | 0.85 | 0.53 | 0.91 |
+| Learned world model only (no history) + trained reader | 0.35 | 0.50 | 0.12 | 0.62 |
+| Mechanical "no change" (follow-up minus baseline) | 0.00 | 0.00 | – | – |
+| Prior findings + learned world model, zero-shot reader | 0.15 | 0.90 | – | 0.52 |
+
+Pair hit: the chosen candidate lies in a target (pairs with a target). Lesion recall: targets with a candidate of P(yes)
+>= 0.5 in them. Progression AUROC: pairs with vs without a target, scored by the largest P(yes).
+
+## Liver, final (2026-10-16)
+
+Extra training data: TCIA CRLM (194 cases, colorectal metastases). Liver world model retrained on MSD pool + CRLM
+(`runs_wm/liver_crlm_nll`, tag lcrlm), fused with the local-mean prior by reciprocal rank. Reader input: two rows of
+views (60 mm and 150 mm), chosen on MSD validation + 40 held-out CRLM cases (hit 1.000 vs 0.974; AUROC 0.985 both); rule
+max P(yes) (0.974-1.000 vs 0.949-0.974 for WM x reader there). Final reader `runs_reader/q8_liver_final` on all data.
+
+| Liver (K=10) | MSD eval (53) | HCC-TACE-Seg external (93) |
+|---|---|---|
+| World model top-1 | 0.68 | 0.56 |
+| **Final pipeline** | **0.85** | **0.73** |
+| Oracle | 0.87 | 0.83 |
+| Candidate AUROC | 0.973 | 0.936 |
+| SAT-Pro | 0.94* | 0.88 |
+| VISTA3D | 0.94* | 0.85 |
+| OmniAbnorm-CT | 0.60* | 0.45 |
+| M3D-LaMed / Hulu-Med-14B / MedGemma-1.5 | 0.08 / 0.00 / 0.00 | 0.14 / 0.04 / 0.00 |
+
+*trained on most of the MSD evaluation cases.

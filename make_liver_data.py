@@ -16,11 +16,12 @@ from multiprocessing import Pool
 import numpy as np
 
 from perr.context_wm import ContextPrior, fuse_rrf
-from perr.liver import MIN_DIAM, QUESTION, LiverPrior, cases, has_target, liver_strips, load_liver
+from perr.liver import CONTEXT_FOV, MIN_DIAM, QUESTION, QUESTION_2SCALE, LiverPrior, cases, has_target, liver_strips, load_liver
 
 OUT = "/raid/home/CAMCA/hj880/perr/data/liver_reader"
 PROPOSAL = "liver"
 TAG = "lnll"
+CONTEXT = False
 
 
 def proposal_top(s, k=10):
@@ -45,7 +46,8 @@ def split():
 def work(args):
     case, is_eval = args
     s = load_liver(case)
-    rows = [dict(r, source="wm") for r in liver_strips(s, proposal_top(s, 10))]
+    ctx = CONTEXT_FOV if CONTEXT else None
+    rows = [dict(r, source="wm") for r in liver_strips(s, proposal_top(s, 10), context_fov=ctx)]
     if not is_eval:
         rng = np.random.default_rng(int(case.split("_")[1]))
         pts = []
@@ -54,7 +56,7 @@ def work(args):
             for _ in range(4 if big else 1):
                 j = rng.uniform(-1, 1, 3) * (3.0 if big else 1.0) / np.array(s.spacing)
                 pts.append((*(np.array(n.zyx) + j), 0.0))
-        rows += [dict(r, source="gt") for r in liver_strips(s, pts)]
+        rows += [dict(r, source="gt") for r in liver_strips(s, pts, context_fov=ctx)]
     out = []
     for r in rows:
         if r["label"] == "small" and not is_eval:
@@ -62,7 +64,7 @@ def work(args):
         path = f"{OUT}/img/{case}_{r['source']}{r['peak']}.png"
         r.pop("image").save(path)
         out.append({**r, "uid": case, "image": path, "small": r["label"] == "small", "label": int(r["label"] == "big"),
-                    "question": QUESTION})
+                    "question": QUESTION_2SCALE if CONTEXT else QUESTION})
     return out
 
 
@@ -71,8 +73,9 @@ if __name__ == "__main__":
     ap.add_argument("--proposal", choices=["liver", "context", "fused"], default="liver")
     ap.add_argument("--out", default=OUT)
     ap.add_argument("--tag", default="lnll", help="cached error of the learned liver world model")
+    ap.add_argument("--context", action="store_true", help="add a 150 mm row of the same planes to each strip")
     a = ap.parse_args()
-    PROPOSAL, OUT, TAG = a.proposal, os.path.abspath(a.out), a.tag
+    PROPOSAL, OUT, TAG, CONTEXT = a.proposal, os.path.abspath(a.out), a.tag, a.context
     os.makedirs(f"{OUT}/img", exist_ok=True)
     ev, pool = split()
     with Pool(24) as p:

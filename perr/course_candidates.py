@@ -2,8 +2,8 @@
 follow-up (bottom row), axial / coronal / sagittal, 60 mm each, soft-tissue window; magenta ticks mark the address.
 Both rows are observed views (the baseline resampled onto the follow-up grid); no predicted view is shown.
 
-Labels: "target" inside a new or grown lesion >= MIN_DIAM (grown by 3 mm); "lesion" inside any other lesion (smaller
-targets, stable or shrinking lesions); "none" elsewhere.
+Labels: "target" inside a selected target (new, or grown to x1.728 volume, >= MIN_DIAM; grown by 3 mm); "lesion" inside
+any other lesion (smaller or less-grown targets, stable or shrinking lesions); "none" elsewhere.
 """
 
 from __future__ import annotations
@@ -40,10 +40,21 @@ def _tile(vol, spacing, plane, zyx, label):
     return im
 
 
+GROWTH = 1.728       # a matched lesion counts as grown at x1.728 volume (+20% diameter, as in RECIST)
+
+
+def selected_targets(t, min_diam: float = 10.0, growth: float = GROWTH):
+    """The task's targets among a pair's new-or-growing lesions: >= min_diam, and new or grown by >= growth in volume."""
+    if not len(t):
+        return t
+    grown = (t.topology_class == "NEWLYAPPEARING") | (t.ratio.fillna(np.inf) >= growth)
+    return t[(t.diam_mm >= min_diam) & grown]
+
+
 def label_maps(P, min_diam: float, tol_mm: float = 3.0):
     """(target map, any-lesion map) on the follow-up grid, both grown by tol_mm."""
-    t = P.targets
-    labs = sorted(int(v) for v in t[t.diam_mm >= min_diam].fu_label) if len(t) else []
+    t = selected_targets(P.targets, min_diam)
+    labs = sorted(int(v) for v in t.fu_label) if len(t) else []
     lab = np.asarray(P.fu_lab)
     grow = lambda m: ndi.distance_transform_edt(~m, sampling=P.spacing) <= tol_mm if m.any() else m
     return grow(np.isin(lab, labs) if labs else np.zeros(lab.shape, bool)), grow(lab > 0)

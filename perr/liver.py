@@ -28,6 +28,12 @@ QUESTION = ("One candidate from a contrast-enhanced abdominal CT: axial, coronal
             "soft-tissue window; magenta ticks mark the exact address. Is there a focal liver lesion (a tumour at "
             "least 10 mm across, distinct from the surrounding parenchyma) at the marked address, rather than normal "
             "liver, a vessel, the liver edge or a structure outside the liver? Answer with one word: yes or no.")
+CONTEXT_FOV = 150
+QUESTION_2SCALE = ("One candidate from a contrast-enhanced abdominal CT: axial, coronal and sagittal views, 60 mm each "
+                   "(top row) and 150 mm each (bottom row, the same address in its surroundings), soft-tissue window; "
+                   "magenta ticks mark the exact address. Is there a focal liver lesion (a tumour at least 10 mm across, "
+                   "distinct from the surrounding parenchyma) at the marked address, rather than normal liver, a vessel, "
+                   "the liver edge or a structure outside the liver? Answer with one word: yes or no.")
 
 
 def cases() -> list[str]:
@@ -124,13 +130,13 @@ class LiverPrior:
         return out
 
 
-def _tile(s: Study, plane: str, zyx, label: str) -> Image.Image:
+def _tile(s: Study, plane: str, zyx, label: str, fov: float = FOV) -> Image.Image:
     z, y, x = zyx
     Z = s.shape[0]
     idx = {"axial": z, "coronal": y, "sagittal": x}[plane]
     c, r = {"axial": (x, y), "coronal": (x, Z - 1 - z), "sagittal": (y, Z - 1 - z)}[plane]
     dr, dc, _ = plane_spacing(plane, s.spacing)
-    h = FOV / 2
+    h = fov / 2
     img = plane_image(np.asarray(s.vol), plane, int(round(idx)))
     im = Image.fromarray(window(sample(img, (c - h / dc, r - h / dr, c + h / dc, r + h / dr), TILE), "soft")).convert("RGB")
     d = ImageDraw.Draw(im)
@@ -142,12 +148,16 @@ def _tile(s: Study, plane: str, zyx, label: str) -> Image.Image:
     return im
 
 
-def liver_strips(s: Study, points, label_fn=None) -> list[dict]:
+def liver_strips(s: Study, points, label_fn=None, context_fov: float | None = None) -> list[dict]:
+    """One row of 60 mm views per address; with context_fov, a second row of the same planes at that field of view."""
     label_fn = label_fn or label_at
     out = []
+    rows = 2 if context_fov else 1
     for n, (z, y, x, v) in enumerate(points, 1):
-        strip = Image.new("RGB", (3 * TILE + 2 * GAP, TILE), (40, 40, 40))
+        strip = Image.new("RGB", (3 * TILE + 2 * GAP, rows * TILE + (rows - 1) * GAP), (40, 40, 40))
         for i, plane in enumerate(("axial", "coronal", "sagittal")):
             strip.paste(_tile(s, plane, (z, y, x), plane), (i * (TILE + GAP), 0))
+            if context_fov:
+                strip.paste(_tile(s, plane, (z, y, x), f"{plane} {int(context_fov)} mm", context_fov), (i * (TILE + GAP), TILE + GAP))
         out.append({"peak": n, "zyx": [z, y, x], "wm": v, "image": strip, "label": label_fn(s.case_id, (z, y, x))})
     return out

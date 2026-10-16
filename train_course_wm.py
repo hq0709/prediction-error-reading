@@ -21,10 +21,22 @@ from perr.course_wm import CTX, ISO, norm
 AUTOPET = "/raid/home/CAMCA/hj880/data_ext/autopet4_longitudinal_ct"
 
 
-def dev_split():
-    """Pair keys "<pid>_<NN>" of training patients, split by patient (no SimpleITK needed here)."""
+def cv_fold(pts, fold, k=3):
+    """Patients of one cross-validation fold of the training patients (seeded, by patient)."""
+    perm = np.random.default_rng(1).permutation(sorted(pts))
+    return set(perm[fold::k].tolist())
+
+
+def dev_split(fold=None):
+    """Pair keys "<pid>_<NN>" of training patients, split by patient (no SimpleITK needed here). With a fold, the fold's
+    patients are left out entirely and 10 of the remaining ones give the validation loss."""
     pts = sorted(json.load(open(f"{AUTOPET}/data_split.json"))["train"])
-    dev = set(np.random.default_rng(0).choice(pts, size=30, replace=False).tolist())
+    if fold is not None:
+        out = cv_fold(pts, fold)
+        pts = [p for p in pts if p not in out]
+        dev = set(np.random.default_rng(0).choice(pts, size=10, replace=False).tolist())
+    else:
+        dev = set(np.random.default_rng(0).choice(pts, size=30, replace=False).tolist())
     keys = sorted(f[:-len(".meta.npy")] for f in os.listdir(ISO) if f.endswith(".meta.npy"))
     keys = [k for k in keys if k.rsplit("_", 1)[0] in set(pts)
             and not np.load(f"{ISO}/{k}.meta.npy", allow_pickle=True).item().get("empty")]
@@ -65,9 +77,10 @@ def main():
     ap.add_argument("--bs", type=int, default=32)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--out", default="runs_wm/course_nll")
+    ap.add_argument("--fold", type=int, help="leave this cross-validation fold of training patients out (0-2)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
-    train, dev = dev_split()
+    train, dev = dev_split(a.fold)
     json.dump({"train": train, "dev": dev}, open(f"{a.out}/split.json", "w"))
     print(f"{len(train)} training pairs, {len(dev)} dev pairs", flush=True)
     dl = DataLoader(Cubes(train, 0), batch_size=a.bs, num_workers=12, pin_memory=True, persistent_workers=True)
