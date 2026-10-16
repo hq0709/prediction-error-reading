@@ -44,13 +44,14 @@ def table(rows, ks=(5, 10, 20, 30)):
     return "\n".join(lines)
 
 
-def make_hf(model_dir, variant="full", bs=32):
+def make_hf(model_dir, variant="full", bs=32, device_map="single"):
     import torch
     from PIL import Image
     from transformers import AutoModelForImageTextToText, AutoProcessor
     proc = AutoProcessor.from_pretrained(model_dir)
     proc.tokenizer.padding_side = "left"
-    model = AutoModelForImageTextToText.from_pretrained(model_dir, dtype=torch.bfloat16, device_map={"": 0}).eval()
+    dmap = {"": 0} if device_map == "single" else device_map
+    model = AutoModelForImageTextToText.from_pretrained(model_dir, dtype=torch.bfloat16, device_map=dmap).eval()
     ids = lambda words: sorted({proc.tokenizer.encode(w, add_special_tokens=False)[0] for w in words})
     yes, no = ids(YES), ids(NO)
     nested = "Gemma" in type(proc).__name__      # Gemma 3 wants one image list per prompt
@@ -114,8 +115,9 @@ if __name__ == "__main__":
     ap.add_argument("name")
     ap.add_argument("files", nargs="+")
     ap.add_argument("--variant", choices=["full", "axial", "nomeas"], default="full")
+    ap.add_argument("--device-map", default="single")
     a = ap.parse_args()
-    score = make_hf(a.spec, a.variant) if a.backend == "hf" else make_api(a.spec, a.variant)
+    score = make_hf(a.spec, a.variant, device_map=a.device_map) if a.backend == "hf" else make_api(a.spec, a.variant)
     for path in a.files:
         rows = [json.loads(l) for l in open(path)]
         ps = score(rows)
