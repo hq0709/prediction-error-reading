@@ -30,7 +30,13 @@ RIM = 5                               # mm: the domain is grown by this much so 
 # than expected, liver tumours darker).
 ORGANS = {"lung": {"src": LUNA_CACHE, "dom": "domain", "iso": ISO, "window": (-1000.0, 400.0), "sign": 1.0},
           "liver": {"src": "/raid/home/CAMCA/hj880/perr/cache/liver", "dom": "liver",
-                    "iso": "/raid/home/CAMCA/hj880/perr/cache/iso_liver", "window": (-200.0, 300.0), "sign": -1.0}}
+                    "iso": "/raid/home/CAMCA/hj880/perr/cache/iso_liver", "window": (-200.0, 300.0), "sign": -1.0},
+          # extra liver training data (TCIA CRLM), cached next to the MSD cases so one model trains on both
+          "liver_crlm": {"src": "/raid/home/CAMCA/hj880/perr/cache/liver_crlm", "dom": "liver",
+                         "iso": "/raid/home/CAMCA/hj880/perr/cache/iso_liver", "window": (-200.0, 300.0), "sign": -1.0},
+          # external liver test set (HCC-TACE-Seg): read with the liver model, never trained on
+          "liver_ext": {"src": "/raid/home/CAMCA/hj880/perr/cache/liver_ext", "dom": "liver",
+                        "iso": "/raid/home/CAMCA/hj880/perr/cache/iso_liver_ext", "window": (-200.0, 300.0), "sign": -1.0}}
 HU_LO, HU_HI = ORGANS["lung"]["window"]
 
 
@@ -60,11 +66,11 @@ def build_iso(uid: str, organ: str = "lung") -> None:
     D = ndi.affine_transform(np.asarray(dom, np.float32), 1 / sp, offset=lo / sp, output_shape=shape, order=1) > 0.5
     Dg = ndi.distance_transform_edt(~D) <= RIM
     ex = np.zeros(shape, bool)
-    if organ == "liver":       # tumour masks grown by 3 mm are cached; grow them by 3 mm more
+    if organ.startswith("liver"):       # tumour masks grown by 3 mm are cached; grow them by 3 mm more
         tum = np.maximum(np.load(f"{cfg['src']}/{uid}.big.npy"), np.load(f"{cfg['src']}/{uid}.small.npy")).astype(np.float32)
         tum = ndi.affine_transform(tum, 1 / sp, offset=lo / sp, output_shape=shape, order=1) > 0.5
         ex = ndi.distance_transform_edt(~tum) <= 3 if tum.any() else ex
-    for zyx, d in (meta["nodules"] if organ == "lung" else []):
+    for zyx, d in (meta["nodules"] if organ == "lung" else []):          # lung: spheres around annotated nodules
         c = np.array(zyx, float) * sp - lo
         r = d / 2 + 6
         sl = tuple(slice(max(0, int(c[i] - r)), max(0, min(shape[i], int(c[i] + r) + 2))) for i in range(3))
@@ -98,8 +104,9 @@ def to_original(zyx_iso, meta):
     return (np.asarray(zyx_iso, float) + meta["lo_mm"]) / meta["spacing"]
 
 
-def make_unet(ch=(32, 64, 128, 256, 320), out_ch=1):
-    """out_ch 1: predicted CT; out_ch 2: predicted CT and its log-variance (the model's own uncertainty)."""
+def make_unet(ch=(32, 64, 128, 256, 320), out_ch=1, in_ch=2):
+    """out_ch 1: predicted CT; out_ch 2: predicted CT and its log-variance (the model's own uncertainty).
+    in_ch 2: (hidden-zeroed CT, hidden mask); 3 adds a co-registered prior CT (the disease-course world)."""
     import torch
     from torch import nn
     import torch.nn.functional as F
@@ -118,7 +125,7 @@ def make_unet(ch=(32, 64, 128, 256, 320), out_ch=1):
 
         def __init__(self):
             super().__init__()
-            self.enc, cin = nn.ModuleList(), 2
+            self.enc, cin = nn.ModuleList(), in_ch
             for c in ch:
                 self.enc.append(Block(cin, c))
                 cin = c

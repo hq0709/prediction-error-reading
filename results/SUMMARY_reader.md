@@ -72,3 +72,52 @@ and liver 0.81 (separate 0.85).
 Not working yet. Pair AUROC: intensity "no change" world model 0.67; tumour-space world model 0.64; zero-shot
 8B reader 0.61-0.73; trained 8B reader (109 training pairs; LM-only LoRA, val-selected over LM + vision) 0.71;
 automated enhancing-volume change 0.77.
+
+## Learned anatomy world model with precision weighting (2026-10-16)
+
+The world model is a 3D U-Net that predicts a 64 mm cube's hidden central 24 mm from its surroundings, with its own
+log-variance (beta-NLL), trained on nodule-free cubes of 568 training-pool scans (`perr/context_wm.py`,
+`runs_wm/ctx_nll`). Candidate addresses are peaks of the smoothed error divided by the smoothed predicted s.d.
+Configuration (sigma 2 mm, this weighting, no fusion with the shape prior) fixed on 60 held-out pool scans.
+
+Recall of the top-K addresses (200 evaluation scans, nodule >= 6 mm):
+
+| World model | K=1 | K=5 | K=10 | K=20 | K=50 |
+|---|---|---|---|---|---|
+| Densest lung points (no world model) | 0.01 | 0.04 | 0.06 | 0.12 | 0.40 |
+| Shape prior (mechanical) | 0.43 | 0.69 | 0.76 | 0.83 | 0.92 |
+| Learned, raw error | 0.43 | 0.62 | 0.69 | 0.79 | 0.90 |
+| **Learned, precision-weighted** | **0.69** | **0.91** | **0.95** | **0.97** | **0.98** |
+
+Reader retrained on the new candidates (Qwen3-VL-8B, LoRA language + vision, `runs_reader/q8_ctx_vis`, val AUROC
+0.970). Selection rule re-chosen on the training pool, both with zero-shot scores (WM x reader 0.744 vs max-p 0.648)
+and with cross-fitted trained-reader scores on 162 pool scans (`choose_rule_cv.py`: WM x reader 0.821, max-p 0.796,
+largest-confirmed <= 0.790): **WM x reader over the top 10**.
+
+| Pipeline (K=10) | fresh1 hit | fresh2 hit | largest | diameter MAE mm |
+|---|---|---|---|---|
+| Shape prior + reader (previous final) | 0.71 | 0.73 | 0.59 / 0.61 | 1.2 / 1.5 |
+| Learned WM + zero-shot 8B reader (WM x reader) | 0.69 | 0.70 | | |
+| **Learned WM + trained reader (WM x reader)** | **0.81** | **0.79** | 0.60 / 0.65 | 1.4 / 1.9 |
+| (same, max-p rule) | 0.88 | 0.77 | 0.70 / 0.66 | 1.4 / 1.4 |
+| Oracle: a target among the top 10 | 0.94 | 0.96 | | |
+
+Candidate AUROC 0.970 / 0.956. Selective answering (WM x reader): accuracy 0.99 at 50% coverage, 0.93 at 70%,
+0.84 at 90%; confidence AUROC 0.87.
+
+World-model ablations with the final reader fixed (K=10, max-p): shape prior 0.71 / 0.73; learned without precision
+weighting 0.63 / 0.62; densest points 0.04 / 0.06.
+
+Liver: learned liver model (`runs_wm/liver_nll`, 63 training cases) recall at K=1/5/10 0.42 / 0.72 / 0.77 vs local-mean
+prior 0.26 / 0.74 / 0.89; the two fused by reciprocal rank (chosen on the pool) 0.64 / 0.81 / 0.85. Reader retrained on
+fused candidates: 0.83 (previous 0.85; oracle 0.85 vs 0.89). Not an improvement.
+
+## Baselines reproduced on our benchmark (published code and weights, run as released)
+
+| Method | fresh1 | fresh2 | liver | note |
+|---|---|---|---|---|
+| SAT-Pro | 0.66 | 0.64 | 0.94* | *45/53 liver eval cases' tumour masks in its training |
+| VISTA3D | 0.42 | 0.46 | 0.94* | *44/53 liver eval cases in training/validation; "lung tumor" class |
+| M3D-LaMed-Phi-3-4B | 0.00 | 0.00 | 0.08 | organ-sized boxes |
+| Hulu-Med-14B | 0.00 | 0.00 | 0.00 | prior-driven answers |
+| MedGemma-1.5-4B | 0.00 | 0.00 | 0.00 | centre-of-image answers |

@@ -13,12 +13,13 @@ def question(measurement: dict) -> str:
 
 
 # Ablation variants of what the reader is shown (the same transform is applied in training and in scoring).
-VARIANTS = ("full", "axial", "nomeas")
+VARIANTS = ("full", "axial", "nomeas", "axial_nomeas")
 QUESTION_AXIAL = ("One candidate from a chest CT: an axial view (with measured outline), 40 mm; the magenta dot marks "
                   "the exact address. Measurement: {m}. Is the structure at the marked address a lung nodule at least "
                   "6 mm across (a compact round blob), rather than a vessel, airway, chest wall or a smaller nodule? "
                   "Answer with one word: yes or no.")
 QUESTION_NOMEAS = QUESTION.replace(" Measurement: {m}.", "")
+QUESTION_AXIAL_NOMEAS = QUESTION_AXIAL.replace(" Measurement: {m}.", "")
 
 
 def prepare(row: dict, variant: str = "full"):
@@ -31,4 +32,6 @@ def prepare(row: dict, variant: str = "full"):
         return im.crop((0, 0, 200, 200)), QUESTION_AXIAL.format(m=json.dumps(row["measurement"]))
     if variant == "nomeas":
         return im, QUESTION_NOMEAS
+    if variant == "axial_nomeas":
+        return im.crop((0, 0, 200, 200)), QUESTION_AXIAL_NOMEAS
     return im, question(row["measurement"])

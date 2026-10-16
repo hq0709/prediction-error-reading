@@ -86,8 +86,11 @@ class LiverPrior:
     name = "liver"
     tag = "liverprior_s15_e3"
 
+    def __init__(self, cache: str = CACHE):
+        self.cache = cache
+
     def error_volume(self, s: Study):
-        path = f"{CACHE}/{s.case_id}.{self.tag}.R.npy"
+        path = f"{self.cache}/{s.case_id}.{self.tag}.R.npy"
         if os.path.exists(path):
             return np.load(path, mmap_mode="r")
         M = np.asarray(s.lung) > 0
@@ -139,11 +142,12 @@ def _tile(s: Study, plane: str, zyx, label: str) -> Image.Image:
     return im
 
 
-def liver_strips(s: Study, points) -> list[dict]:
+def liver_strips(s: Study, points, label_fn=None) -> list[dict]:
+    label_fn = label_fn or label_at
     out = []
     for n, (z, y, x, v) in enumerate(points, 1):
         strip = Image.new("RGB", (3 * TILE + 2 * GAP, TILE), (40, 40, 40))
         for i, plane in enumerate(("axial", "coronal", "sagittal")):
             strip.paste(_tile(s, plane, (z, y, x), plane), (i * (TILE + GAP), 0))
-        out.append({"peak": n, "zyx": [z, y, x], "wm": v, "image": strip, "label": label_at(s.case_id, (z, y, x))})
+        out.append({"peak": n, "zyx": [z, y, x], "wm": v, "image": strip, "label": label_fn(s.case_id, (z, y, x))})
     return out

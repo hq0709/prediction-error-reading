@@ -18,7 +18,7 @@ from collections import defaultdict
 
 import numpy as np
 
-from perr.reader_prompt import prepare
+from perr.reader_prompt import VARIANTS, prepare
 
 YES, NO = ("yes", "Yes", "YES"), ("no", "No", "NO")
 
@@ -114,7 +114,7 @@ if __name__ == "__main__":
     ap.add_argument("spec")
     ap.add_argument("name")
     ap.add_argument("files", nargs="+")
-    ap.add_argument("--variant", choices=["full", "axial", "nomeas"], default="full")
+    ap.add_argument("--variant", choices=list(VARIANTS), default="full")
     ap.add_argument("--device-map", default="single")
     a = ap.parse_args()
     score = make_hf(a.spec, a.variant, device_map=a.device_map) if a.backend == "hf" else make_api(a.spec, a.variant)

@@ -65,9 +65,12 @@ def main():
     ap.add_argument("--out", default="runs_wm/ctx")
     ap.add_argument("--nll", action="store_true", help="also predict a log-variance; beta-NLL loss (beta 0.5)")
     ap.add_argument("--organ", choices=sorted(ORGANS), default="lung")
+    ap.add_argument("--extra-cases", help="file of further training cases cached in the same 1 mm folder (e.g. CRLM)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     train, dev = dev_split(a.organ)
+    if a.extra_cases:
+        train += open(a.extra_cases).read().split()
     json.dump({"train": train, "dev": dev}, open(f"{a.out}/split.json", "w"))
     dl = DataLoader(Cubes(train, 0, organ=a.organ), batch_size=a.bs, num_workers=12, pin_memory=True, persistent_workers=True)
     val = torch.stack([c for c, _ in zip(Cubes(dev, 12345, flip=False, organ=a.organ), range(512))])

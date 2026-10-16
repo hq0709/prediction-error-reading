@@ -6,15 +6,32 @@ target tumour (centre jittered by up to 3 mm) and one per smaller tumour. Labels
 3 mm); 0 outside every tumour; candidates on smaller tumours are 0 at evaluation and skipped in training.
 
     python make_liver_data.py
+    python make_liver_data.py --proposal fused --out data/liver_reader_fused     # with the learned liver world model
 """
+import argparse
 import json
+import os
 from multiprocessing import Pool
 
 import numpy as np
 
+from perr.context_wm import ContextPrior, fuse_rrf
 from perr.liver import MIN_DIAM, QUESTION, LiverPrior, cases, has_target, liver_strips, load_liver
 
 OUT = "/raid/home/CAMCA/hj880/perr/data/liver_reader"
+PROPOSAL = "liver"
+TAG = "lnll"
+
+
+def proposal_top(s, k=10):
+    """liver: the local-mean world model; context: the learned one (sigma fixed on the liver dev split); fused: the two
+    by reciprocal rank (c = 10, as for the lung; chosen over either alone on the training pool)."""
+    learned = lambda n: ContextPrior(tag=TAG, sigma=3.0, organ="liver").top(s, n, nms_mm=15.0)
+    if PROPOSAL == "context":
+        return learned(k)
+    if PROPOSAL == "fused":
+        return fuse_rrf([LiverPrior().top(s, 50), learned(50)], s.spacing, c=10.0, nms_mm=15.0)[:k]
+    return LiverPrior().top(s, k)
 
 
 def split():
@@ -28,7 +45,7 @@ def split():
 def work(args):
     case, is_eval = args
     s = load_liver(case)
-    rows = [dict(r, source="wm") for r in liver_strips(s, LiverPrior().top(s, 10))]
+    rows = [dict(r, source="wm") for r in liver_strips(s, proposal_top(s, 10))]
     if not is_eval:
         rng = np.random.default_rng(int(case.split("_")[1]))
         pts = []
@@ -50,6 +67,13 @@ def work(args):
 
 
 if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--proposal", choices=["liver", "context", "fused"], default="liver")
+    ap.add_argument("--out", default=OUT)
+    ap.add_argument("--tag", default="lnll", help="cached error of the learned liver world model")
+    a = ap.parse_args()
+    PROPOSAL, OUT, TAG = a.proposal, os.path.abspath(a.out), a.tag
+    os.makedirs(f"{OUT}/img", exist_ok=True)
     ev, pool = split()
     with Pool(24) as p:
         res = p.map(work, [(c, True) for c in ev] + [(c, False) for c in pool], chunksize=1)

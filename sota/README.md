@@ -14,6 +14,12 @@ The task, for every case: is there a target lesion, where is it, and how big is 
 - Volumes: `cache/liver/<case>.vol.npy`, int16 HU. Spacing is in `cache/liver/<case>.meta.npy`, the same way.
 - Originals: `/raid/home/CAMCA/hj880/msd/Task03_Liver/imagesTr/<case>.nii.gz`.
 
+**External liver test set: HCC-TACE-Seg (TCIA).**
+- Target: a tumour >= 10 mm.
+- Cases: 93, in `eval_liver_ext.txt`. Not in SAT-Pro's or VISTA3D's training data.
+- Volumes: `cache/liver_ext/<case>.vol.npy` plus `meta.npy`, same convention; loader `perr/liver_ext.py` (`load_case`, `label_at`).
+- Output: `results/sota/<method>_liver_ext.jsonl`.
+
 **Array convention.** Every cached array is indexed `[z, y, x]` in LPS order:
 - x grows toward the patient's left;
 - y grows toward posterior;

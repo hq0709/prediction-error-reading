@@ -16,7 +16,7 @@ from peft import LoraConfig, get_peft_model
 from PIL import Image
 from transformers import AutoModelForImageTextToText, AutoProcessor
 
-from perr.reader_prompt import prepare
+from perr.reader_prompt import VARIANTS, prepare
 
 VARIANT = "full"
 
@@ -64,7 +64,7 @@ def main():
     ap.add_argument("--rank", type=int, default=16)
     ap.add_argument("--vision", action="store_true", help="also adapt the vision tower")
     ap.add_argument("--max-steps", type=int, default=0, help="smoke test: stop each epoch after this many steps")
-    ap.add_argument("--variant", choices=["full", "axial", "nomeas"], default="full", help="what the reader is shown")
+    ap.add_argument("--variant", choices=list(VARIANTS), default="full", help="what the reader is shown")
     ap.add_argument("--wm-only", action="store_true", help="train on world-model candidates only (no gt strips)")
     ap.add_argument("--device-map", default="single", help='"single" (one GPU) or "auto" (split a large model)')
     a = ap.parse_args()
