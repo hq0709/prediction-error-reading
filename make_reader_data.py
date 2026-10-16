@@ -7,9 +7,13 @@ Training pool (LUNA16 scans outside every evaluation set; 10% of scans held out 
   "gt"  with --gt, four strips per annotated nodule >= 6 mm and one per smaller nodule, centred within 2 mm
         (resp. 1 mm) of the annotated centre, to give the reader more positives and hard negatives.
 Evaluation (--eval LO HI): the top-K world-model peaks of pilot_cases()[LO:HI], nothing else.
+--proposal picks the world model: shape (default), context (the learned anatomy model), mixed (the two
+rank-interleaved), fused (the two fused by reciprocal rank), or intensity (no world model, the ablation); --out
+keeps each proposal's data apart.
 
     python make_reader_data.py --gt
     python make_reader_data.py --eval 60 160
+    python make_reader_data.py --gt --proposal mixed --out data/reader_mixed
 """
 import argparse
 import json
@@ -20,14 +24,19 @@ from multiprocessing import Pool
 import numpy as np
 
 from perr.candidates import candidate_rows, strips
+from perr.context_wm import ContextPrior, FusedPrior, MixedPrior
 from perr.score import MIN_DIAM
 from perr.study import load_luna, pilot_cases
-from perr.worldmodels import IntensityPeaks
+from perr.worldmodels import IntensityPeaks, ShapePrior
 
 OUT = "/raid/home/CAMCA/hj880/perr/data/reader"
 K = 10
 GT = False
-PROPOSAL = None            # None: the shape world model; "intensity": the no-world-model ablation
+PROPOSAL = "shape"
+CTX_TAG = "nll"
+PROPOSALS = {"shape": lambda: ShapePrior(), "intensity": lambda: IntensityPeaks(),
+             "context": lambda: ContextPrior(CTX_TAG), "mixed": lambda: MixedPrior(CTX_TAG, weight="pool"),
+             "fused": lambda: FusedPrior(CTX_TAG, weight="pool")}
 
 
 def gt_points(s, rng):
@@ -43,9 +52,8 @@ def gt_points(s, rng):
 def work(uid):
     try:
         s = load_luna(uid)
-        prop = IntensityPeaks() if PROPOSAL == "intensity" else None
         src = "int" if PROPOSAL == "intensity" else "wm"
-        rows = [dict(r, source=src) for r in candidate_rows(s, K, proposal=prop)]
+        rows = [dict(r, source=src) for r in candidate_rows(s, K, proposal=PROPOSALS[PROPOSAL]())]
         if GT and s.nodules:
             rows += [dict(r, source="gt") for r in strips(s, gt_points(s, np.random.default_rng(zlib.crc32(uid.encode()))))]
         out = []
@@ -69,12 +77,14 @@ if __name__ == "__main__":
     ap.add_argument("--gt", action="store_true")
     ap.add_argument("--eval", type=int, nargs=2)
     ap.add_argument("--workers", type=int, default=24)
-    ap.add_argument("--proposal", choices=["shape", "intensity"], default="shape")
+    ap.add_argument("--proposal", choices=sorted(PROPOSALS), default="shape")
+    ap.add_argument("--ctx-tag", default="nll", help="cached error of the learned world model to use")
     ap.add_argument("--k", type=int, default=10, help="candidates per scan")
+    ap.add_argument("--out", default=OUT)
     a = ap.parse_args()
-    K = a.k
+    K, OUT, CTX_TAG = a.k, os.path.abspath(a.out), a.ctx_tag
     GT = a.gt and not a.eval
-    PROPOSAL = None if a.proposal == "shape" else a.proposal
+    PROPOSAL = a.proposal
     os.makedirs(f"{OUT}/img", exist_ok=True)
     if a.eval:
         uids = pilot_cases(a.eval[1])[a.eval[0]:a.eval[1]]
@@ -85,7 +95,7 @@ if __name__ == "__main__":
     rows = [r for rs in results for r in rs if "error" not in r]
     errs = [r for rs in results for r in rs if "error" in r]
     if a.eval:
-        tag = ("" if PROPOSAL is None else "int_") + ("" if K == 10 else f"k{K}_")
+        tag = ("int_" if PROPOSAL == "intensity" else "") + ("" if K == 10 else f"k{K}_")
         write(f"{OUT}/eval_{tag}{a.eval[0]}_{a.eval[1]}.jsonl", rows)
         splits = {"eval": rows}
     else:

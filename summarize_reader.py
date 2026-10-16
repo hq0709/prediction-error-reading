@@ -2,7 +2,7 @@
 strip, the chosen address is reported with the harness measurement, and the report is scored exactly like an
 agent's final report (hit >= 6 mm, hit on the largest nodule, diameter error, side).
 
-    python summarize_reader.py results/reader_<name>_eval_60_160.json [...]
+    python summarize_reader.py results/reader_<name>_eval_60_160.json [...] [--data data/reader_ctx]
 """
 import json
 import sys
@@ -20,11 +20,11 @@ RULES = {
 }
 
 
-def evaluate(path, ks=(5, 10)):
+def evaluate(path, ks=(5, 10), data="data/reader"):
     res = json.load(open(path))
     stem = path.split("reader_", 1)[1].rsplit(".", 1)[0]
     ev = stem[stem.index("eval_"):]
-    meta = {(r["uid"], r["peak"]): r for r in map(json.loads, open(f"data/reader/{ev}.jsonl"))}
+    meta = {(r["uid"], r["peak"]): r for r in map(json.loads, open(f"{data}/{ev}.jsonl"))}
     by = defaultdict(list)
     for r in res:
         by[r["uid"]].append({**r, **{k: meta[(r["uid"], r["peak"])][k] for k in ("zyx", "measurement")}})
@@ -46,5 +46,11 @@ def evaluate(path, ks=(5, 10)):
 
 
 if __name__ == "__main__":
-    for p in sys.argv[1:]:
-        print(evaluate(p), flush=True)
+    args = sys.argv[1:]
+    data = "data/reader"
+    if "--data" in args:
+        i = args.index("--data")
+        data = args[i + 1]
+        args = args[:i] + args[i + 2:]
+    for p in args:
+        print(evaluate(p, data=data), flush=True)
