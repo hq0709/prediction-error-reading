@@ -23,6 +23,17 @@ def norm(img):
     return np.asarray(img, np.float32) / 255.0
 
 
+def downscale(img, s):
+    """Canonical 512 x 512 radiograph -> (512/s)^2 by block means (float32 in [0, 255]); s = 1 returns it as is. A world
+    model trained on the downscaled canvas has the same window and hidden part in its own pixels, so it hides an s
+    times larger region (s = 4: a 192 px = ~16 cm square of the 512 canvas, predicted from the whole radiograph)."""
+    img = np.asarray(img, np.float32)
+    if s == 1:
+        return img
+    n = img.shape[0] // s
+    return img.reshape(n, s, n, s).mean((1, 3))
+
+
 def hole_mask():
     m = np.zeros((CTX, CTX), np.float32)
     a, b = (CTX - HOLE) // 2, (CTX + HOLE) // 2

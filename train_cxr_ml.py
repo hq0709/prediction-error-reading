@@ -10,6 +10,9 @@ Designs:
            the original full-resolution image (perr.cxr_reader.render_wm, the single-finding reader's evidence view);
   grid     control: the same layout at six fixed lung-field places (enlargement without the world model).
            wm / grid inputs are pre-rendered by make_cxr_ml_views.py into data/cxr_ml_<design>/<key>.png.
+  focal    the radiograph left untouched, and a second image tiling six of its places enlarged at ~native detail:
+           the world model's top focal addresses in the thorax (make_cxr_crops.py focal, first six crops, 160 px each);
+  focal_random  control: the same with random thorax points (make_cxr_crops.py focal_random).
 
 Scores: P(yes) at each answer position, read in two passes (answers filled greedily, then re-read) so that each
 finding is conditioned on the reader's own previous answers, as in decoding. Writes results/sota_cxr/<name>.csv
@@ -44,11 +47,26 @@ Q = {"global": "Frontal chest radiograph. For each finding below, answer yes or 
               "For the current radiograph, answer yes or no for each finding below.",
      "prior_none": "Frontal chest radiograph (no previous radiograph available). For each finding below, answer yes or no.",
      "places": "Frontal chest radiograph (left; numbered circles mark six places of interest) and those places enlarged "
-               "(right). For each finding below, answer yes or no."}
+               "(right). For each finding below, answer yes or no.",
+     "tiles": "The first image is a frontal chest radiograph; the second shows six places of it enlarged at full "
+              "resolution. For each finding below, answer yes or no."}
+CROPS = "/raid/home/CAMCA/hj880/perr/cache/cxr_crops_{}"
+
+
+def tiles(key, design, n=6, side=160):
+    """Six enlarged places as one 2 x 3 image (missing crops stay black)."""
+    p = f"{CROPS.format(design)}/{key}.npy"
+    a = np.load(p)[:n] if os.path.exists(p) else np.zeros((n, side, side), np.uint8)
+    a = [np.asarray(Image.fromarray(x).resize((side, side), Image.BILINEAR)) for x in a]
+    a += [np.zeros((side, side), np.uint8)] * (n - len(a))
+    return Image.fromarray(np.concatenate([np.concatenate(a[:3], 1), np.concatenate(a[3:6], 1)], 0)).convert("RGB")
 VIEWS = "/raid/home/CAMCA/hj880/perr/data/cxr_ml_{}"
 
 
 def images_of(row, design):
+    if design in ("focal", "focal_random"):
+        cur = Image.fromarray(np.load(f"{CACHE}/{row['key']}.npy")).convert("RGB")
+        return [cur, tiles(row["key"], design)], Q["tiles"]
     if design in ("wm", "grid"):                                    # same question for both choices of places
         return [Image.open(f"{VIEWS.format(design)}/{row['key'].replace('/', '_')}.png").convert("RGB")], Q["places"]
     cur = Image.fromarray(np.load(f"{CACHE}/{row['key']}.npy")).convert("RGB")
@@ -155,7 +173,7 @@ def table(design):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--design", choices=["global", "prior", "wm", "grid"], default="global")
+    ap.add_argument("--design", choices=["global", "prior", "wm", "grid", "focal", "focal_random"], default="global")
     ap.add_argument("--out", required=True)
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--bs", type=int, default=8)

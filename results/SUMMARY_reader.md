@@ -376,3 +376,47 @@ such dependence, and on radiographs, where most findings are diffuse, it is the 
 Multi-label VLM reader (Qwen3-VL-8B LoRA, one prompt per image, 13 yes/no answers; the same 60k training images as
 the DenseNet runs, one epoch): image only, test 0.766 / 0.795 (validation on 600 images 0.770) vs DenseNet 0.778 /
 0.803 on the same images. With the previous study's frontal image as a first image: test 0.770 / 0.798 (validation 0.789 vs 0.770). With the evidence view (radiograph with six places circled and enlarged, the single-finding reader's input): world-model places 0.754 / 0.789, fixed places 0.752 / 0.789 (validation 0.769 / 0.770). The composite costs the reader ~0.012 whichever places it shows, and the world model's places are no better than fixed ones; the single-finding readers' +0.028 does not hold for a reader that learns.
+
+## Chest radiographs, second pass: where the radiograph world model fails and what changed (2026-10-17)
+
+Search domain. The radiograph world model's addresses were read over the whole radiograph (letterbox padding removed),
+so a third of its top-10 addresses fell on shoulders, neck, bowel gas, ECG leads and markers. The CT pipeline reads
+inside the grown lung domain; the radiograph counterpart is now the thorax (`perr/cxr_anat.py`: the ChestX-Det PSPNet
+released with torchxrayvision, `cxr_anatomy.py`; lungs, hila, heart, aorta and mediastinum, holes filled, grown 8 px;
+the whole radiograph when the segmentation finds no thorax). 99% of NIH box centres lie inside it.
+
+| NIH boxes, organs+8 domain (`cxr_point.py`) | K=1 | K=3 | K=10 | 6 views cover (`cxr_coverage.py`) |
+|---|---|---|---|---|
+| pixel world model, old protocol (whole radiograph) | 0.12 | 0.32 | 0.65 | 0.32 |
+| pixel world model, thorax (sigma 8, brighter) | 0.25 | 0.51 | 0.80 | 0.57-0.59 |
+| PatchCore, thorax | 0.32 | 0.55 | 0.78 | 0.65 |
+| random thorax points | 0.17 | 0.36 | 0.63 | 0.52 |
+| six fixed lung places | | | | 0.65 |
+
+ChestX-Det test (553 images, 1,734 boxes, 13 findings) gives the same order (K=10: world model 0.68, PatchCore 0.67,
+random 0.54). MIMIC normal vs abnormal barely moves with the domain (pixel world model 0.613, PatchCore 0.739, latent
+0.712 on test; `cxr_ad.py`).
+
+Two attempts that did not help:
+- larger hidden regions: the same U-Net on the radiograph downscaled 2x and 4x (8 and 16 cm hidden, the 4x model
+  sees the whole radiograph; `train_cxr_wm.py --scale`): MIMIC normal vs abnormal 0.609 / 0.584 (vs 0.613), pointing
+  worse (NIH K=10 0.77 / 0.58), their maximum with the fine model worse still (0.65). Effusion and oedema stay
+  undetected in pixel space even when the hidden region spans the lung base.
+- position: PatchCore with each token's position in the thorax appended (`patchcore_pos.py`): 0.736-0.739 vs 0.739.
+
+Per finding, the world model localises focal findings better than PatchCore and diffuse ones worse (NIH, K=3: mass
+0.62 vs 0.56, nodule 0.38-0.48 vs 0.25, effusion 0.39 vs 0.54, atelectasis 0.38 vs 0.45). With the configuration for
+focal findings chosen on ChestX-Det train (sigma 2, brighter than expected, 16 px suppression), recall of focal boxes
+among the top-K addresses on the held-out sets:
+
+| Focal findings, top-10 addresses | world model | PatchCore | random |
+|---|---|---|---|
+| ChestX-Det test (nodule, mass, calcification, fracture; 386 boxes) | 0.45 | 0.35 | 0.13 |
+| ... nodule / calcification / fracture / mass | 0.41 / 0.45 / 0.41 / 0.82 | 0.31 / 0.21 / 0.35 / 0.82 | 0.06 / 0.01 / 0.17 / 0.56 |
+| NIH (nodule, mass; 164 boxes) | 0.81 | 0.60 | 0.30 |
+| ... nodule | 0.76 | 0.44 | 0.16 |
+
+Enlarging the focal addresses does not help the MIMIC classifier: two-stream DenseNet with ten ~native-detail views
+(0.1-side crops; `make_cxr_crops.py focal`, `train_cxr_evidence.py --crops focal`), same 60k images: test mean 13 0.773
+(lung lesion 0.704, fracture 0.685, pleural other 0.801) vs ten random thorax views 0.777 (0.715, 0.689, 0.852) vs image
+only 0.778 (0.702, 0.706, 0.870).

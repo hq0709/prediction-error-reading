@@ -4,6 +4,8 @@ views pools their features, and the logit is global + pooled-evidence.
 
   --crops wm     views at the world model's top-K addresses
   --crops grid   control: views at six fixed lung-field zones (enlargement without the world model)
+  --crops focal  ten views at the world model's focal addresses in the thorax, ~native detail (0.1-side crops)
+  --crops focal_random  control: ten random thorax points, same crops
   --crops prior  one view: the patient's previous frontal radiograph (the 512 px image of the previous study, read at
                  the global resolution); images without a previous study get a learned "no prior" term instead
 
@@ -35,6 +37,7 @@ from perr.cxr import mimic_frontal  # noqa: E402
 
 CROPS = "/raid/home/CAMCA/hj880/perr/cache/cxr_crops_{}"
 K, SIDE = 6, 224
+NVIEWS = {"focal": 10, "focal_random": 10}
 PRIORS = "/raid/home/CAMCA/hj880/perr/results/cxr_prior_keys.csv"
 MEAN = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
 STD = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
@@ -60,7 +63,7 @@ class CXR(Dataset):
             v = (np.load(f"{CACHE}/{q}.npy") if q else np.zeros((512, 512), np.uint8))[None]
             return torch.from_numpy(x), torch.from_numpy(v), self.y[i], self.keep[i], float(q is not None)
         p = f"{CROPS.format(self.crops)}/{k}.npy"
-        v = np.load(p) if os.path.exists(p) else np.zeros((K, SIDE, SIDE), np.uint8)
+        v = np.load(p) if os.path.exists(p) else np.zeros((NVIEWS.get(self.crops, K), SIDE, SIDE), np.uint8)
         return torch.from_numpy(x), torch.from_numpy(v), self.y[i], self.keep[i], 1.0
 
 
@@ -141,7 +144,7 @@ def mean_auc(prob, ds):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--crops", choices=["wm", "grid", "prior"], required=True)
+    ap.add_argument("--crops", choices=["wm", "grid", "prior", "focal", "focal_random"], required=True)
     ap.add_argument("--keys", required=True)
     ap.add_argument("--name", required=True)
     ap.add_argument("--res", type=int, default=320)

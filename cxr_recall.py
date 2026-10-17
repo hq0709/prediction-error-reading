@@ -24,9 +24,10 @@ TAG = "cxr"
 KS = (1, 3, 5, 10, 20)
 
 
-def boxes():
-    b = pd.read_csv("results/cxr_nih_boxes.csv")
-    g = pd.read_csv("results/cxr_nih.csv").set_index("image")
+def boxes(which="nih"):
+    """Boxes of a set (nih: ChestX-ray14's 984; cxdet: ChestX-Det, build_cxdet.py) on the 512 canvas."""
+    b = pd.read_csv(f"results/cxr_{which}_boxes.csv")
+    g = pd.read_csv(f"results/cxr_{which}.csv").set_index("image")
     b["key"] = [g.loc[i, "key"] for i in b.image]
     for c in ("x", "y", "w", "h"):
         b[c] = b[c] * [g.loc[i, "scale"] for i in b.image]

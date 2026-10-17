@@ -5,6 +5,8 @@ current one (a third input channel), trained on training pairs without any new f
 
     CUDA_VISIBLE_DEVICES=0 python train_cxr_wm.py --steps 40000 --out runs_wm/cxr_nll
     CUDA_VISIBLE_DEVICES=0 python train_cxr_wm.py --course --steps 30000 --out runs_wm/cxr_course
+    CUDA_VISIBLE_DEVICES=6 python train_cxr_wm.py --scale 4 --out runs_wm/cxr_nll_s4     # 16 cm hidden, whole-image context
+    CUDA_VISIBLE_DEVICES=5 python train_cxr_wm.py --canvas 1024 --out runs_wm/cxr_nll_1024  # 1024 grid: 2 cm hidden
 """
 import argparse
 import math
@@ -18,14 +20,14 @@ from torch.utils.data import DataLoader, IterableDataset
 
 from perr.cxr import CACHE
 from perr.cxr_course import LABELS, REG
-from perr.cxr_wm import CTX, hole_mask, make_unet2d, norm
+from perr.cxr_wm import CTX, downscale, hole_mask, make_unet2d, norm
 
 
 class Windows(IterableDataset):
     """Windows of one image, or with course=True stacked (current, registered prior) windows of a pair."""
 
-    def __init__(self, keys, seed, course=False):
-        self.keys, self.seed, self.course = keys, seed, course
+    def __init__(self, keys, seed, course=False, scale=1):
+        self.keys, self.seed, self.course, self.scale = keys, seed, course, scale
 
     def __iter__(self):
         wi = torch.utils.data.get_worker_info()
@@ -33,7 +35,7 @@ class Windows(IterableDataset):
         h = CTX // 2
         while True:
             key = self.keys[rng.integers(len(self.keys))]
-            img = np.load(f"{CACHE}/{key}.npy")
+            img = downscale(np.load(f"{CACHE}/{key}.npy"), self.scale)
             rows, cols = np.nonzero(img.any(1))[0], np.nonzero(img.any(0))[0]
             r = rng.integers(rows.min(), rows.max() + 1)
             c = rng.integers(cols.min(), cols.max() + 1)
@@ -52,7 +54,12 @@ def main():
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--out", default="runs_wm/cxr_nll")
     ap.add_argument("--course", action="store_true", help="also condition on the registered prior radiograph")
+    ap.add_argument("--scale", type=int, default=1, help="train on the radiograph downscaled by this factor")
+    ap.add_argument("--canvas", type=int, default=512, help="1024: the build_cxr1024.py grid (its 40k training images)")
     a = ap.parse_args()
+    global CACHE
+    if a.canvas == 1024:
+        CACHE = f"{CACHE}1024"
     os.makedirs(a.out, exist_ok=True)
     if a.course:
         d = pd.read_csv("results/cxr_pairs.csv")
@@ -62,9 +69,12 @@ def main():
         d = pd.read_csv("results/cxr_mimic.csv")
         normal = d[d["No Finding"] == 1.0]
         train, val = normal[normal.split == "train"].key.tolist(), normal[normal.split == "validate"].key.tolist()
+        if a.canvas == 1024:
+            train = open("runs_wm/cxr1024_train_keys.txt").read().split()
     print(f"{len(train)} training images, {len(val)} validation images", flush=True)
-    dl = DataLoader(Windows(train, 0, a.course), batch_size=a.bs, num_workers=12, pin_memory=True, persistent_workers=True)
-    vx = torch.stack([w for w, _ in zip(Windows(val, 12345, a.course), range(1024))])
+    assert not (a.course and a.scale > 1)
+    dl = DataLoader(Windows(train, 0, a.course, a.scale), batch_size=a.bs, num_workers=12, pin_memory=True, persistent_workers=True)
+    vx = torch.stack([w for w, _ in zip(Windows(val, 12345, a.course, a.scale), range(1024))])
     model = make_unet2d(in_ch=3 if a.course else 2).cuda()
     print("params", sum(p.numel() for p in model.parameters()) / 1e6, "M", flush=True)
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=1e-4)

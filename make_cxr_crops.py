@@ -5,6 +5,9 @@ square crops of the original MIMIC JPEG (side = CROP_FRAC of the longer side, ~6
          both signs, 40 px suppression on the 512 grid);
   grid   control: six fixed places (upper, middle, lower zones of each lung field), i.e. enlargement without the
          world model.
+  focal  the world model's ten focal addresses inside the thorax (perr.cxr_anat.search_domain; precision-weighted
+         error, sigma 2, brighter than expected, 16 px suppression), crops of 0.1 of the longer side (~native detail);
+  focal_random  control: ten random thorax points, same crops (enlargement at places the world model did not choose).
 
 A crop at 224 px shows its region at ~2.2x the detail of the 512 px canonical image (~3.5x the 320 px input of the
 global reader). Writes cache/cxr_crops_<design>/<key>.npy (K, 224, 224) uint8 and the centres (512 grid) to
@@ -23,9 +26,11 @@ from PIL import Image
 
 from perr.cxr import CACHE, mimic_frontal
 from perr.cxr_reader import grid_points
+from perr.cxr_anat import search_domain
 from perr.cxr_wm import error_map, peaks, valid_region
 
 K, SIDE, CROP_FRAC = 6, 224, 0.2
+SETTINGS = {"focal": (10, 0.1), "focal_random": (10, 0.1)}           # design -> (K, CROP_FRAC); others use the default
 WM = "/raid/home/CAMCA/hj880/perr/cache/cxr_wm"
 OUT = "/raid/home/CAMCA/hj880/perr/cache/cxr_crops_{}"
 DESIGN = "wm"
@@ -34,6 +39,13 @@ DESIGN = "wm"
 def addresses(key, img):
     if DESIGN == "grid":
         return grid_points(img)
+    if DESIGN == "focal_random":
+        rng = np.random.default_rng(int(key.split("-")[-1], 16) % 2 ** 32)
+        return peaks(rng.random((512, 512)).astype(np.float32), search_domain(key, valid_region(img)), k=K, nms=16)
+    if DESIGN == "focal":
+        R = np.load(f"{WM}/{key}.cxrR.npy").astype(np.float32)
+        S = np.load(f"{WM}/{key}.cxrS.npy").astype(np.float32)
+        return peaks(error_map(R, S, 2.0, 1), search_domain(key, valid_region(img)), k=K, nms=16)
     R = np.load(f"{WM}/{key}.cxrR.npy").astype(np.float32)
     S = np.load(f"{WM}/{key}.cxrS.npy").astype(np.float32)
     return peaks(error_map(R, S, 8.0, 0), valid_region(img), k=K, nms=40)
@@ -68,6 +80,7 @@ def work(item):
 
 if __name__ == "__main__":
     DESIGN = sys.argv[1]
+    K, CROP_FRAC = SETTINGS.get(DESIGN, (K, CROP_FRAC))
     m = mimic_frontal()
     m["key"] = "mimic/" + m.dicom_id
     if len(sys.argv) > 2 and sys.argv[2] == "all":
