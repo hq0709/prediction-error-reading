@@ -209,6 +209,18 @@ max P(yes) (0.974-1.000 vs 0.949-0.974 for WM x reader there). Final reader `run
 
 *trained on most of the MSD evaluation cases.
 
+Non-predictive baseline on the same cases (`ct_patchcore.py --organ liver`; bank of 500k normal-liver cells from 60
+world-model training cases; hit = an address inside a target tumour; recall at K = 1 / 5 / 10):
+
+| Addresses | MSD eval (53) | HCC-TACE-Seg (93) |
+|---|---|---|
+| Liver world model (final candidates) | 0.68 / 0.83 / 0.87 | 0.56 / 0.81 / 0.83 |
+| PatchCore, DINOv2-base | 0.38 / 0.51 / 0.64 | 0.45 / 0.71 / 0.83 (K=20 0.88) |
+| PatchCore, WideResNet-50 | 0.06 / 0.15 / 0.28 | 0.11 / 0.28 / 0.41 |
+
+In the near-uniform liver a memory of normal patches is a serious competitor (as the darkest-points baseline was):
+the world model leads at small K and ties at K=10 on the external set. In the lung it leads by 0.63 at K=10.
+
 ## One reader for all three tasks (final reader, 2026-10-16)
 
 `runs_reader/q8_joint3`: Qwen3-VL-8B, LoRA on language + vision, trained once on the union of the lung (final
@@ -363,4 +375,4 @@ such dependence, and on radiographs, where most findings are diffuse, it is the 
 
 Multi-label VLM reader (Qwen3-VL-8B LoRA, one prompt per image, 13 yes/no answers; the same 60k training images as
 the DenseNet runs, one epoch): image only, test 0.766 / 0.795 (validation on 600 images 0.770) vs DenseNet 0.778 /
-0.803 on the same images; prior radiograph, world-model and fixed-place evidence views below.
+0.803 on the same images. With the previous study's frontal image as a first image: test 0.770 / 0.798 (validation 0.789 vs 0.770). World-model and fixed-place evidence views: validation at step 2500 0.750 / 0.724 (image only 0.753); final numbers when done.
