@@ -5,7 +5,11 @@ instead of one per finding makes training on every MIMIC training image affordab
 Designs:
   global   the current frontal radiograph;
   prior    the patient's previous frontal radiograph and the current one (the history as the world model's context);
-           studies without a previous radiograph get the current image only and say so.
+           studies without a previous radiograph get the current image only and say so;
+  wm       the radiograph with the world model's six addresses circled and numbered, and each address enlarged from
+           the original full-resolution image (perr.cxr_reader.render_wm, the single-finding reader's evidence view);
+  grid     control: the same layout at six fixed lung-field places (enlargement without the world model).
+           wm / grid inputs are pre-rendered by make_cxr_ml_views.py into data/cxr_ml_<design>/<key>.png.
 
 Scores: P(yes) at each answer position, read in two passes (answers filled greedily, then re-read) so that each
 finding is conditioned on the reader's own previous answers, as in decoding. Writes results/sota_cxr/<name>.csv
@@ -38,10 +42,15 @@ SHORT = {"Atelectasis": "atelectasis", "Cardiomegaly": "cardiomegaly", "Consolid
 Q = {"global": "Frontal chest radiograph. For each finding below, answer yes or no.",
      "prior": "The first image is the patient's previous frontal chest radiograph, the second the current one. "
               "For the current radiograph, answer yes or no for each finding below.",
-     "prior_none": "Frontal chest radiograph (no previous radiograph available). For each finding below, answer yes or no."}
+     "prior_none": "Frontal chest radiograph (no previous radiograph available). For each finding below, answer yes or no.",
+     "places": "Frontal chest radiograph (left; numbered circles mark six places of interest) and those places enlarged "
+               "(right). For each finding below, answer yes or no."}
+VIEWS = "/raid/home/CAMCA/hj880/perr/data/cxr_ml_{}"
 
 
 def images_of(row, design):
+    if design in ("wm", "grid"):                                    # same question for both choices of places
+        return [Image.open(f"{VIEWS.format(design)}/{row['key'].replace('/', '_')}.png").convert("RGB")], Q["places"]
     cur = Image.fromarray(np.load(f"{CACHE}/{row['key']}.npy")).convert("RGB")
     if design == "prior" and isinstance(row.get("prior_key"), str):
         return [Image.fromarray(np.load(f"{CACHE}/{row['prior_key']}.npy")).convert("RGB"), cur], Q["prior"]
@@ -146,7 +155,7 @@ def table(design):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--design", choices=["global", "prior"], default="global")
+    ap.add_argument("--design", choices=["global", "prior", "wm", "grid"], default="global")
     ap.add_argument("--out", required=True)
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--bs", type=int, default=8)

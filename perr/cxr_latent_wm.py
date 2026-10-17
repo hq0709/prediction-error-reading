@@ -33,6 +33,25 @@ def block_masks():
     return np.stack(out)
 
 
+def phase_masks(scale, shift=None):
+    """Dense reading at one scale in four passes: the grid tiled by scale x scale blocks on a 2-block lattice; pass
+    (a, b) hides the blocks with row-parity a and column-parity b, so every patch is hidden exactly once and every
+    hidden block is surrounded by visible ones. (4, GRID, GRID) booleans; the default shift balances the passes."""
+    if shift is None:
+        shift = scale // 2 if scale >= 12 else 0
+    idx = (np.arange(GRID) + shift) // scale % 2
+    return np.stack([(idx[:, None] == a) & (idx[None, :] == b) for a in (0, 1) for b in (0, 1)])
+
+
+def random_phase(b, rng, scales):
+    """Training masks matching phase_masks: per image a random scale, lattice shift and pass."""
+    out = np.zeros((b, GRID, GRID), bool)
+    for i in range(b):
+        s = int(rng.choice(scales))
+        out[i] = phase_masks(s, int(rng.integers(0, 2 * s)))[rng.integers(0, 4)]
+    return out
+
+
 def make_encoder(name):
     import torch
     from transformers import AutoImageProcessor, AutoModel

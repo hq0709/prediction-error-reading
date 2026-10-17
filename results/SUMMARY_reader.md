@@ -88,6 +88,13 @@ Recall of the top-K addresses (200 evaluation scans, nodule >= 6 mm):
 | Shape prior (mechanical) | 0.43 | 0.69 | 0.76 | 0.83 | 0.92 |
 | Learned, raw error | 0.43 | 0.62 | 0.69 | 0.79 | 0.90 |
 | **Learned, precision-weighted** | **0.69** | **0.91** | **0.95** | **0.97** | **0.98** |
+| PatchCore, WideResNet-50 (not predictive; 2-D axial cells of 4 mm, bank of 500k normal cells from 60 training scans) | 0.10 | 0.22 | 0.32 | 0.39 | 0.50 |
+| PatchCore, DINOv2-base (same, 7 mm cells) | 0.10 | 0.20 | 0.24 | 0.27 | 0.41 |
+
+PatchCore (`ct_patchcore.py`) is the strongest non-predictive model of normal on radiographs (below), but in lung CT
+its top addresses sit on pleural and hilar boundaries (64 % within 5 mm of the lung edge): on a slice a vessel in
+cross-section looks like a nodule, and only the 3-D context separates them. (A first bank drawn from interior cells
+only put 98 % of addresses on the boundary, recall 0.12; the bank now holds the same cells that are scored.)
 
 Reader retrained on the new candidates (Qwen3-VL-8B, LoRA language + vision, `runs_reader/q8_ctx_vis`, val AUROC
 0.970). Selection rule re-chosen on the training pool, both with zero-shot scores (WM x reader 0.744 vs max-p 0.648)
@@ -305,5 +312,55 @@ World-model signal as an extra input, tested and not adopted (MIMIC test, mean A
   2k labels 0.638 vs 0.662 (validation 0.689 vs 0.708). The 6k / 20k runs were stopped.
 - Late fusion of the 60k DenseNet with the latent (RAD-DINO) world model's image score, weights fitted on validation:
   0.7731 vs 0.7729.
-- Single-finding VLM reader with the world model's places enlarged: validation 0.831 vs 0.833 for the global image
-  (those enlargements were 168 px tiles of 0.2-side crops, ~1.6x the detail of the 512 px image).
+- Single-finding VLM reader (Qwen3-VL-8B, 33k training images) with the world model's six places circled and enlarged
+  from the original image: test mean AUROC 0.687 vs 0.659 for the global image (5 competition findings 0.724 vs
+  0.702), 11 of 13 findings higher (effusion 0.825 vs 0.777, devices 0.847 vs 0.808, pneumonia 0.621 vs 0.566); pooled
+  validation AUROC did not show it (0.831 vs 0.833; it is dominated by per-question answer rates). The fixed-place
+  control did not train (loss at ln 2 from its first epoch; a re-run with the same seed went the same way and was stopped). These single-question readers barely learn (training loss 0.67-0.68 vs ln 2 = 0.69 for every design), so the multi-label reader below is the test of the evidence views.
+
+Where to enlarge (NIH ChestX-ray14 boxes, 984 boxes; a box counts as covered when its centre lies inside one of the
+0.2-side views):
+
+| Views | n | covered | point in box |
+|---|---|---|---|
+| world model's top addresses (sigma 8, both signs) | 6 | 0.32 | 0.46 |
+| six fixed lung-field places | 6 | 0.65 | 0.64 |
+| world-model choice among a 4 x 6 lattice / random choice | 6 | 0.48 / 0.35 | |
+| fixed 8 / fixed 12 places | 8 / 12 | 0.67 / 0.65 | |
+| six fixed + world model's top addresses outside them | 8 / 10 / 12 | 0.68 / 0.71 / 0.74 | 0.68 / 0.70 / 0.71 |
+
+The world model's addresses alone cover less than fixed lung places (its errors concentrate at mediastinal and
+diaphragmatic contours); added to the fixed places they cover more than the same number of further fixed places,
+most for masses (0.87 vs 0.72) and pneumonia (0.88 vs 0.83). Normalising the error map per location by "No Finding"
+statistics made addresses worse (point in box 0.28 at 6). The latent (RAD-DINO) world model localises worse than the
+pixel one: point in box at 10 addresses 0.31 raw / 0.39 precision-weighted vs 0.60.
+
+Resolution and evidence views for the DenseNet reader (same 60k training images, recipe of the image-only baseline):
+- image only at 512 instead of 320 px: test 0.779 / 0.808 vs 0.778 / 0.803 (validation 0.794 vs 0.789).
+- two-stream (whole image + six 224 px views from the original JPEG, ~3.5x the detail of the 320 px input), test
+  mean 13 / mean 5: fixed lung places 0.780 / 0.806 (validation 0.801), world-model addresses 0.777 / 0.803
+  (validation 0.786), image only 0.778 / 0.803 (validation 0.789). Fixed views help the small findings (pneumothorax
+  0.831 vs 0.803, lung lesion 0.715 vs 0.702) and cost a little elsewhere; the world model's addresses add nothing.
+- previous radiograph as a second stream (siamese DenseNet: the previous study's frontal image read like the current one, late fusion, a learned term when there is none): test 0.779 / 0.803 (validation 0.798); lung lesion 0.730 vs 0.702, fracture 0.724 vs 0.706, pleural other 0.843 vs 0.870. The same history as an input channel (registered prior, [X, P, X]) had given 0.767.
+- The official validation split overstates gains on the official test split (fixed views +0.013 on validation, +0.003
+  on test; the prior channel +0.009 / -0.008). 90% of test images have a previous study against 70% in train and
+  validation; the test patients are sicker and imaged more often.
+
+Unsupervised normal vs abnormal and pointing, against a non-predictive normal model: PatchCore (memory bank of
+600k RAD-DINO patch features from 3,000 "No Finding" training images, nearest-neighbour distance, top-200 mean):
+
+| Model of the normal radiograph | MIMIC test AUROC (validation) | NIH pointing at 10 addresses |
+|---|---|---|
+| Pixel world model (2-D U-Net) | 0.607 (0.721) | 0.60-0.65 |
+| Latent world model, RAD-DINO | 0.687 (0.788) | 0.31-0.39 |
+| Latent, RAD-DINO, multi-scale (3 / 6 / 12-patch block lattices, 4 passes per scale; z-scored per patch by "No Finding" validation maps) | 0.698 (0.823) | 0.33-0.38 |
+| PatchCore, RAD-DINO (not predictive) | 0.740 (0.834) | 0.64 |
+| PatchCore + latent world model (weight on validation) | 0.742 (0.835) | |
+
+A context-predictive model expects what the surrounding context implies; when the context is itself abnormal (diffuse
+opacities, effusion, edema) the prediction follows it and the error stays small. A memory of normal patches has no
+such dependence, and on radiographs, where most findings are diffuse, it is the stronger model of normal.
+
+Multi-label VLM reader (Qwen3-VL-8B LoRA, one prompt per image, 13 yes/no answers; the same 60k training images as
+the DenseNet runs, one epoch): image only, test 0.766 / 0.795 (validation on 600 images 0.770) vs DenseNet 0.778 /
+0.803 on the same images; prior radiograph, world-model and fixed-place evidence views below.

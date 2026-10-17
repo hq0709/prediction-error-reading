@@ -9,7 +9,6 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-import SimpleITK as sitk
 
 LUNA = "/raid/home/CAMCA/hj880/data_ext/luna16"
 CACHE = "/raid/home/CAMCA/hj880/perr/cache/luna"
@@ -42,7 +41,8 @@ def _mhd_path(uid: str) -> str:
     return hits[0]
 
 
-def _load_lps(path: str) -> sitk.Image:
+def _load_lps(path: str) -> "sitk.Image":
+    import SimpleITK as sitk                     # only needed to read raw .mhd studies, not the cache
     return sitk.DICOMOrient(sitk.ReadImage(path), "LPS")
 
 
@@ -61,6 +61,7 @@ def load_luna(uid: str) -> Study:
         meta = np.load(stem + ".meta.npy", allow_pickle=True).item()
         spacing, nod_idx, sha = meta["spacing"], meta["nodules"], meta["sha256"]
     else:
+        import SimpleITK as sitk
         img = _load_lps(_mhd_path(uid))
         vol = sitk.GetArrayFromImage(img).astype(np.int16)
         sx, sy, sz = img.GetSpacing()

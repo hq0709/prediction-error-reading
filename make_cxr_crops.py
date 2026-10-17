@@ -12,6 +12,7 @@ cache/cxr_crops_<design>/<key>.pts.npy, for the 60k training images and every va
 
     python make_cxr_crops.py wm
     python make_cxr_crops.py grid
+    python make_cxr_crops.py grid all      # every training image (full-data runs)
 """
 import os
 import sys
@@ -69,8 +70,11 @@ if __name__ == "__main__":
     DESIGN = sys.argv[1]
     m = mimic_frontal()
     m["key"] = "mimic/" + m.dicom_id
-    keys = set(open("results/cxr_train60k_keys.txt").read().split())
-    m = m[m.key.isin(keys) | m.split.isin(["validate", "test"])]
+    if len(sys.argv) > 2 and sys.argv[2] == "all":
+        m = m[[os.path.exists(f"{CACHE}/{k}.npy") for k in m.key]]
+    else:
+        keys = set(open("results/cxr_train60k_keys.txt").read().split())
+        m = m[m.key.isin(keys) | m.split.isin(["validate", "test"])]
     items = list(zip(m.key, m.path))
     with Pool(64) as p:
         ok = p.map(work, items, chunksize=16)

@@ -4,6 +4,8 @@ views pools their features, and the logit is global + pooled-evidence.
 
   --crops wm     views at the world model's top-K addresses
   --crops grid   control: views at six fixed lung-field zones (enlargement without the world model)
+  --crops prior  one view: the patient's previous frontal radiograph (the 512 px image of the previous study, read at
+                 the global resolution); images without a previous study get a learned "no prior" term instead
 
 Everything else (training images, labels, schedule, epoch chosen on the official validate split) is the image-only
 baseline's (train_cxr_cls.py). Test probabilities go to results/sota_cxr/<name>.csv (scored by sota_cxr/score.py).
@@ -33,6 +35,7 @@ from perr.cxr import mimic_frontal  # noqa: E402
 
 CROPS = "/raid/home/CAMCA/hj880/perr/cache/cxr_crops_{}"
 K, SIDE = 6, 224
+PRIORS = "/raid/home/CAMCA/hj880/perr/results/cxr_prior_keys.csv"
 MEAN = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
 STD = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
 
@@ -42,6 +45,9 @@ class CXR(Dataset):
         self.keys, self.crops = df.key.tolist(), crops
         y, keep = targets(df)
         self.y, self.keep = torch.from_numpy(y), torch.from_numpy(keep.astype(np.float32))
+        if crops == "prior":
+            pk = pd.read_csv(PRIORS).set_index("key").prior_key
+            self.prior = [pk.get(k) if isinstance(pk.get(k), str) else None for k in self.keys]
 
     def __len__(self):
         return len(self.keys)
@@ -49,9 +55,13 @@ class CXR(Dataset):
     def __getitem__(self, i):
         k = self.keys[i]
         x = np.load(f"{CACHE}/{k}.npy")
+        if self.crops == "prior":
+            q = self.prior[i]
+            v = (np.load(f"{CACHE}/{q}.npy") if q else np.zeros((512, 512), np.uint8))[None]
+            return torch.from_numpy(x), torch.from_numpy(v), self.y[i], self.keep[i], float(q is not None)
         p = f"{CROPS.format(self.crops)}/{k}.npy"
         v = np.load(p) if os.path.exists(p) else np.zeros((K, SIDE, SIDE), np.uint8)
-        return torch.from_numpy(x), torch.from_numpy(v), self.y[i], self.keep[i]
+        return torch.from_numpy(x), torch.from_numpy(v), self.y[i], self.keep[i], 1.0
 
 
 def augment(x, train):
@@ -76,8 +86,10 @@ def norm(x):
 def prep(x, v, res, train):
     x = F.interpolate(x.unsqueeze(1).float().div_(255), size=(res, res), mode="bilinear", antialias=True,
                       align_corners=False)
-    b = v.shape[0]
-    v = v.reshape(b * K, 1, SIDE, SIDE).float().div_(255)
+    b, k, s = v.shape[:3]
+    v = v.reshape(b * k, 1, s, s).float().div_(255)
+    if s != SIDE:                                                   # the previous radiograph: read like the current one
+        v = F.interpolate(v, size=(res, res), mode="bilinear", antialias=True, align_corners=False)
     return norm(augment(x, train)), norm(augment(v, train))
 
 
@@ -93,27 +105,31 @@ class TwoStream(nn.Module):
         self.head_g = nn.Linear(1024, n)
         self.att = nn.Linear(1024, n)
         self.head_l = nn.Linear(1024, n)
+        self.absent = nn.Parameter(torch.zeros(n))                                  # term used when there is no view
 
     @staticmethod
     def pool(f):
         return F.adaptive_avg_pool2d(F.relu(f), 1).flatten(1)
 
-    def forward(self, x, v):
+    def forward(self, x, v, have):
         b = x.shape[0]
         fg = self.pool(self.g(x))
-        fl = self.pool(self.l(v)).view(b, K, -1)                                   # (B, K, 1024)
+        fl = self.pool(self.l(v)).view(b, v.shape[0] // b, -1)                     # (B, K, 1024)
         a = self.att(fl).softmax(1)                                                 # (B, K, n) attention per finding
         pooled = torch.einsum("bkn,bkd->bnd", a, fl)                               # (B, n, 1024)
-        return self.head_g(fg) + (pooled * self.head_l.weight).sum(-1) + self.head_l.bias
+        local = (pooled * self.head_l.weight).sum(-1) + self.head_l.bias
+        h = have.view(b, 1).to(local.dtype)
+        return self.head_g(fg) + h * local + (1 - h) * self.absent
 
 
 @torch.no_grad()
 def predict(model, loader, res, dev):
     model.eval()
     out = []
-    for x, v, _, _ in loader:
+    for x, v, _, _, h in loader:
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            out.append(torch.sigmoid(model(*prep(x.to(dev, non_blocking=True), v.to(dev, non_blocking=True), res, False)).float()).cpu())
+            xs, vs = prep(x.to(dev, non_blocking=True), v.to(dev, non_blocking=True), res, False)
+            out.append(torch.sigmoid(model(xs, vs, h.to(dev)).float()).cpu())
     model.train()
     return torch.cat(out).numpy()
 
@@ -125,7 +141,7 @@ def mean_auc(prob, ds):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--crops", choices=["wm", "grid"], required=True)
+    ap.add_argument("--crops", choices=["wm", "grid", "prior"], required=True)
     ap.add_argument("--keys", required=True)
     ap.add_argument("--name", required=True)
     ap.add_argument("--res", type=int, default=320)
@@ -156,11 +172,11 @@ def main():
     best, hist = -1.0, []
     for ep in range(a.epochs):
         t0 = time.time()
-        for x, v, y, k in ltr:
+        for x, v, y, k, h in ltr:
             x, v = x.to(dev, non_blocking=True), v.to(dev, non_blocking=True)
-            y, k = y.to(dev, non_blocking=True), k.to(dev, non_blocking=True)
+            y, k, h = y.to(dev, non_blocking=True), k.to(dev, non_blocking=True), h.to(dev)
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                logit = model(*prep(x, v, a.res, True))
+                logit = model(*prep(x, v, a.res, True), h)
             loss = (F.binary_cross_entropy_with_logits(logit.float(), y, reduction="none") * k).sum() / k.sum().clamp(min=1)
             opt.zero_grad(set_to_none=True)
             loss.backward()

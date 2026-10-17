@@ -6,6 +6,10 @@ hidden blocks blanked out in pixels (a ViT mixes information across patches, so 
 leak the hidden content); target features come from the encoder run on the full image.
 
     CUDA_VISIBLE_DEVICES=2 python train_cxr_latent_wm.py --encoder dinov2 --steps 8000 --out runs_wm/cxr_latent_dinov2
+
+--masking phase --scales 3,6,12: multi-scale world model. Each training image hides one pass of a block lattice
+(perr.cxr_latent_wm.phase_masks) at a random scale; dense reading hides the four passes at every scale (4 encoder
+runs per scale instead of 64 for the sliding 6 x 6 block), giving one error map per scale.
 """
 import argparse
 import math
@@ -18,7 +22,7 @@ import torch
 import torch.nn.functional as F
 
 from perr.cxr import CACHE, FINDINGS
-from perr.cxr_latent_wm import BLOCK, GRID, block_masks, make_encoder, make_predictor
+from perr.cxr_latent_wm import BLOCK, GRID, block_masks, make_encoder, make_predictor, phase_masks, random_phase
 
 PATCH = 14
 SIDE = GRID * PATCH
@@ -60,6 +64,63 @@ def auroc(s, y):
     return float((ranks[:len(pos)].sum() - len(pos) * (len(pos) + 1) / 2) / (len(pos) * len(neg)))
 
 
+@torch.no_grad()
+def read_phase(enc, pred, mean, std, key, scales, dev="cuda"):
+    """Dense reading at every scale: (len(scales), 2, GRID, GRID) raw and precision-weighted per-patch errors."""
+    img = load_batch([key], dev)
+    target = encode(enc, img, mean, std)
+    out = []
+    for sc in scales:
+        masks = torch.from_numpy(phase_masks(sc).reshape(4, -1)).to(dev)
+        context = encode(enc, blank(img.expand(4, -1, -1, -1), masks, mean), mean, std)
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            mu, s = pred(context, masks)
+        se = ((mu.float() - target) ** 2).mean(-1)
+        s = s.float().clamp(-10, 6)
+        m = masks.float()
+        out.append(torch.stack([(se * m).sum(0), (se * torch.exp(-s) * m).sum(0)]).view(2, GRID, GRID))
+    return torch.stack(out).cpu().numpy()
+
+
+def evaluate_phase(enc, pred, mean, std, scales, out):
+    """MIMIC validation / test normal vs abnormal from the multi-scale maps: per scale and error type the mean of the
+    top-t patches, and the sum over scales of maps z-scored by "No Finding" validation statistics per patch."""
+    pred.eval()
+    d = pd.read_csv("results/cxr_mimic.csv")
+    ev = d[d.split.isin(["validate", "test"])].copy()
+    others = [f for f in FINDINGS if f != "No Finding"]
+    ev["abnormal"] = (ev[others] == 1).any(axis=1).astype(int)
+    ev = ev[(ev["No Finding"] == 1) | (ev.abnormal == 1)].reset_index(drop=True)
+    maps = np.stack([read_phase(enc, pred, mean, std, k, scales) for k in ev.key])        # (n, S, 2, G, G)
+    np.save(f"{out}/maps_eval.npy", maps.astype(np.float16))
+    ev[["key", "split", "abnormal", "No Finding"] + others].to_csv(f"{out}/maps_eval_keys.csv", index=False)
+    nf = ((ev.split == "validate") & (ev["No Finding"] == 1)).to_numpy()
+    mu, sd = maps[nf].mean(0), maps[nf].std(0) + 1e-6
+    z = (maps - mu) / sd
+    top = lambda m, t: np.sort(m.reshape(len(m), -1), 1)[:, ::-1][:, :t].mean(1)  # noqa: E731
+    cols = {}
+    for i, sc in enumerate(scales):
+        for j, nm in enumerate(("raw", "pw")):
+            for t in (5, 14, 50):
+                cols[f"{nm}{sc}_top{t}"] = top(maps[:, i, j], t)
+                cols[f"z{nm}{sc}_top{t}"] = top(z[:, i, j], t)
+    for j, nm in enumerate(("raw", "pw")):
+        for t in (5, 14, 50):
+            cols[f"zsum_{nm}_top{t}"] = top(z[:, :, j].sum(1), t)
+    sc_df = pd.concat([ev, pd.DataFrame(cols)], axis=1)
+    sc_df.to_csv(f"{out}/scores.csv", index=False)
+    val, test = sc_df[sc_df.split == "validate"], sc_df[sc_df.split == "test"]
+    best = max(cols, key=lambda c: auroc(val[c], val.abnormal))
+    print("validation, best 8:", " | ".join(f"{c} {auroc(val[c], val.abnormal):.3f}" for c in sorted(cols, key=lambda c: -auroc(val[c], val.abnormal))[:8]))
+    print(f"TEST normal vs abnormal, configuration chosen on validation ({best}): {auroc(test[best], test.abnormal):.3f}")
+    nfr = test[test["No Finding"] == 1]
+    for f in others:
+        pos = test[test[f] == 1]
+        if len(pos) >= 20:
+            sub = pd.concat([pos.assign(y=1), nfr.assign(y=0)])
+            print(f"  {f:28s} n={len(pos):4d} AUROC vs No Finding {auroc(sub[best], sub.y):.3f}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--encoder", choices=["dinov2", "raddino"], default="dinov2")
@@ -67,7 +128,10 @@ def main():
     ap.add_argument("--bs", type=int, default=32)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--masking", choices=["blocks", "phase"], default="blocks")
+    ap.add_argument("--scales", default="3,6,12")
     a = ap.parse_args()
+    scales = [int(x) for x in a.scales.split(",")]
     os.makedirs(a.out, exist_ok=True)
     dev = "cuda"
     enc, mean, std = make_encoder(a.encoder)
@@ -81,7 +145,8 @@ def main():
     t0, run = time.time(), []
     for step in range(a.steps):
         img = load_batch([train[i] for i in rng.integers(0, len(train), a.bs)], dev)
-        hidden = random_hidden(a.bs, rng, dev)
+        hidden = (random_hidden(a.bs, rng, dev) if a.masking == "blocks" else
+                  torch.from_numpy(random_phase(a.bs, rng, scales).reshape(a.bs, -1)).to(dev))
         target = encode(enc, img, mean, std)
         context = encode(enc, blank(img, hidden, mean), mean, std)
         with torch.autocast("cuda", dtype=torch.bfloat16):
@@ -100,6 +165,8 @@ def main():
             run = []
     torch.save(pred.state_dict(), f"{a.out}/predictor.pt")
 
+    if a.masking == "phase":
+        return evaluate_phase(enc, pred, mean, std, scales, a.out)
     # dense reading of validation and test images
     pred.eval()
     masks = torch.from_numpy(block_masks().reshape(len(block_masks()), -1)).to(dev)
