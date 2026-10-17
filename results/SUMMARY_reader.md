@@ -375,4 +375,4 @@ such dependence, and on radiographs, where most findings are diffuse, it is the 
 
 Multi-label VLM reader (Qwen3-VL-8B LoRA, one prompt per image, 13 yes/no answers; the same 60k training images as
 the DenseNet runs, one epoch): image only, test 0.766 / 0.795 (validation on 600 images 0.770) vs DenseNet 0.778 /
-0.803 on the same images. With the previous study's frontal image as a first image: test 0.770 / 0.798 (validation 0.789 vs 0.770). World-model and fixed-place evidence views: validation at step 2500 0.750 / 0.724 (image only 0.753); final numbers when done.
+0.803 on the same images. With the previous study's frontal image as a first image: test 0.770 / 0.798 (validation 0.789 vs 0.770). With the evidence view (radiograph with six places circled and enlarged, the single-finding reader's input): world-model places 0.754 / 0.789, fixed places 0.752 / 0.789 (validation 0.769 / 0.770). The composite costs the reader ~0.012 whichever places it shows, and the world model's places are no better than fixed ones; the single-finding readers' +0.028 does not hold for a reader that learns.
