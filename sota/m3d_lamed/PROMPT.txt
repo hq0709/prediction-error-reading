@@ -1,0 +1,22 @@
+M3D-LaMed-Phi-3-4B -- fixed prompts (one per dataset), fixed before the first evaluation run.
+
+Format: the repo's positioning (REC) format, Bench/dataset/multi_dataset.py PosRECDataset:
+    "<im_patch>" * 256 + " " + question        (no chat template; the tokenizer prepends <s>)
+The question uses the documented positioning template "Where is {} in this image? Please output the box."
+(PosREC cls_questions[4]; also the online-demo usage line), with {} = the target lesion and its size floor.
+
+LUNA16:
+Where is the largest lung nodule of at least 6 mm in this image? Please output the box.
+
+MSD Task03 liver:
+Where is the largest liver tumor of at least 10 mm in this image? Please output the box.
+
+Vocabulary: "liver tumor" is an M3D-Seg class name (dataset 0009, term_dictionary.py). M3D-Seg has no nodule class
+(its nearest lung class is "lung tumours", MSD Task06); "lung nodule" was kept because it names the target and is in
+the model's report/VQA vocabulary (M3D-Cap / M3D-VQA from Radiopaedia).
+
+Expected answer: "<bx_start>[d1, h1, w1, d2, h2, w2]<bx_end>" (box tokens are stripped by skip_special_tokens),
+coordinates = voxel index / axis size in the 32x256x256 input. Parsed with the repo's regex (Bench/utils.py
+extract_box_from_text, first match). No box and a negative phrase -> present false; no box otherwise -> unparseable,
+present false; zyx null in both cases.
+Decoding: greedy (do_sample=False), max_new_tokens=256, fp32 weights (Bench/eval/eval_pos.py defaults).

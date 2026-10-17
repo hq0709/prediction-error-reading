@@ -1,0 +1,16 @@
+VISTA3D is prompted with one class index of its own label dictionary (configs/metadata.json of the MONAI bundle),
+automatic segmentation mode: "label_prompt" only, no point clicks.
+
+LUNA16 (200 eval scans):  label_prompt [23]  = "lung tumor"
+    VISTA3D has no nodule class. 23 is its only lung-lesion class (trained on MSD Task06 lung tumours). No other
+    class is lung-lesion related (24 pancreatic tumor, 26 hepatic tumor, 27 colon cancer primaries, 128 bone lesion,
+    129 kidney mass, 130 liver tumor are organ-specific).
+MSD Task03 liver (53):    label_prompt [26]  = "hepatic tumor"
+    VISTA3D's liver-tumour class. Index 130 "liver tumor" exists in the label dict but is a legacy index the bundle
+    does not support ("130, # liver tumor already have hepatic tumor", docs/inference.md); the bundle's evaluator
+    rejects it without point prompts ("Undefined label prompt detected"). VISTA3D's own training maps the MSD Task03
+    tumour label to 26 (data/jsons/label_mappings.json: "Task03": [[1, 1], [2, 26]]).
+
+Input dict per case, official format of configs/inference.json:
+{"image": "<case>.nii", "label_prompt": [23]}
+{"image": "<case>.nii", "label_prompt": [26]}

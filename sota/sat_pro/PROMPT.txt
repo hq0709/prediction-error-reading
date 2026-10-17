@@ -1,0 +1,9 @@
+SAT-Pro is prompted with one anatomical class name in its own vocabulary (text query to the knowledge encoder),
+modality "ct", automatic mode (no point or box prompts exist in SAT).
+
+LUNA16 (200 eval scans):  "lung nodule"
+MSD Task03 liver (53):    "liver tumor"
+
+Input jsonl line per case, official format of data/inference_demo/demo.jsonl:
+{"image": "<case>.nii", "label": ["lung nodule"], "modality": "ct", "dataset": "luna"}
+{"image": "<case>.nii", "label": ["liver tumor"], "modality": "ct", "dataset": "liver"}

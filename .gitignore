@@ -7,3 +7,5 @@ __pycache__/
 *.pyc
 data/
 runs_reader/
+runs_cls/
+runs_wm/

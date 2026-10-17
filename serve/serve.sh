@@ -15,4 +15,4 @@ exec /raid/home/CAMCA/hj880/venvs/grl/bin/vllm serve /raid/home/CAMCA/hj880/$MOD
   --served-model-name $NAME --tensor-parallel-size $TP --port $PORT \
   --max-model-len $MAXLEN --gpu-memory-utilization ${GPU_UTIL:-0.78} --max-num-seqs 64 \
   --limit-mm-per-prompt '{"image": 40}' --trust-remote-code \
-  --compilation-config '{"pass_config": {"fuse_allreduce_rms": false}}'
+  ${EXTRA_ARGS} --compilation-config '{"pass_config": {"fuse_allreduce_rms": false}}'

@@ -1,0 +1,26 @@
+Hulu-Med-14B -- fixed prompt templates (one per dataset), fixed before the first evaluation run.
+
+Message format (README "3D Medical Image Example", HF remote code):
+  processor(conversation=[{"role": "user", "content": [
+      {"type": "3d", "3d": {"image_path": <case>.nii, "nii_num_slices": 180, "nii_axis": 2}},
+      {"type": "text", "text": <prompt below>}]}],
+    add_system_prompt=True, add_generation_prompt=True, return_tensors="pt")
+  (system prompt from the model's chat template: "You are Hulu-Med, a helpful health assistant that can understand
+  text, 2D images, videos, and 3D images.")
+The bracketed fields are filled per case from the volume geometry only: {n} = number of fed slices (180, or all slices
+if the scan has fewer), {nm1} = n-1, {dz} = mean spacing between fed slices in mm, {w} x {h} = slice size in pixels
+(512 x 512 for every case), {wm1} = w-1, {hm1} = h-1, {px} = in-plane pixel spacing in mm.
+
+LUNA16:
+This is a chest CT scan given as {n} axial slices, ordered from inferior (slice 0) to superior (slice {nm1}), about {dz:.1f} mm apart. Each slice is a {w} x {h} pixel image with {px:.2f} mm pixels; x is the column (0 at the left edge, {wm1} at the right edge) and y is the row (0 at the top edge, {hm1} at the bottom edge). Find the largest lung nodule that is at least 6 mm in diameter. Answer with only a JSON object: {"present": true or false, "slice": <slice index>, "x": <x>, "y": <y>, "diameter_mm": <diameter in mm>}. If there is no lung nodule of at least 6 mm, set present to false and the other fields to null.
+
+MSD Task03 liver:
+This is a contrast-enhanced abdominal CT scan given as {n} axial slices, ordered from inferior (slice 0) to superior (slice {nm1}), about {dz:.1f} mm apart. Each slice is a {w} x {h} pixel image with {px:.2f} mm pixels; x is the column (0 at the left edge, {wm1} at the right edge) and y is the row (0 at the top edge, {hm1} at the bottom edge). Find the largest liver tumor that is at least 10 mm in diameter. Answer with only a JSON object: {"present": true or false, "slice": <slice index>, "x": <x>, "y": <y>, "diameter_mm": <diameter in mm>}. If there is no liver tumor of at least 10 mm, set present to false and the other fields to null.
+
+Example filled prompt (LUNA16 pool scan ...111258527162678142285870245028, 253 slices):
+This is a chest CT scan given as 180 axial slices, ordered from inferior (slice 0) to superior (slice 179), about 1.8 mm apart. Each slice is a 512 x 512 pixel image with 0.62 mm pixels; x is the column (0 at the left edge, 511 at the right edge) and y is the row (0 at the top edge, 511 at the bottom edge). Find the largest lung nodule that is at least 6 mm in diameter. ...
+
+Parsing (fixed): processor.batch_decode(use_think=False); last JSON object that parses; keys present/slice/x/y/
+diameter_mm. present false -> zyx null. present true with missing or out-of-range coordinates -> zyx null.
+No JSON -> unparseable, present false, zyx null.
+Decoding: greedy (do_sample=False), max_new_tokens=1024; repetition_penalty 1.05 from generation_config.json kept.

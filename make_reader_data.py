@@ -7,7 +7,8 @@ Training pool (LUNA16 scans outside every evaluation set; 10% of scans held out 
   "gt"  with --gt, four strips per annotated nodule >= 6 mm and one per smaller nodule, centred within 2 mm
         (resp. 1 mm) of the annotated centre, to give the reader more positives and hard negatives.
 Evaluation (--eval LO HI): the top-K world-model peaks of pilot_cases()[LO:HI], nothing else.
---proposal picks the world model: shape (default), context (the learned anatomy model), mixed (the two
+--proposal picks the world model: shape (default), context (the learned anatomy model; context_raw without the
+precision weighting, the ablation), mixed (the two
 rank-interleaved), fused (the two fused by reciprocal rank), or intensity (no world model, the ablation); --out
 keeps each proposal's data apart.
 
@@ -35,7 +36,8 @@ GT = False
 PROPOSAL = "shape"
 CTX_TAG = "nll"
 PROPOSALS = {"shape": lambda: ShapePrior(), "intensity": lambda: IntensityPeaks(),
-             "context": lambda: ContextPrior(CTX_TAG), "mixed": lambda: MixedPrior(CTX_TAG, weight="pool"),
+             "context": lambda: ContextPrior(CTX_TAG), "context_raw": lambda: ContextPrior(CTX_TAG, weight="none"),
+             "mixed": lambda: MixedPrior(CTX_TAG, weight="pool"),
              "fused": lambda: FusedPrior(CTX_TAG, weight="pool")}
 
 

@@ -237,3 +237,73 @@ Selective answering with the final reader (answer only the cases where the chose
 | Liver, MSD (53) | 1.00 / 0.97 / 0.83 | 0.95 |
 | Liver, external HCC-TACE-Seg (93) | 0.96 / 0.94 / 0.75 | 0.90 |
 | Disease course (20 pairs with a target) | 0.90 / 0.93 / 0.80 | 0.83 |
+
+Disease-course baseline, LesionLocator (CVPR 2025; tracks each baseline lesion into the follow-up and segments it;
+answer = the tracked lesion with the largest growth): pair hit 0.75 (15/20), progression AUROC 0.80 (one upstream
+padding bug fixed; its segmenter was trained on autoPET I/II from the same hospital, shared patients not excluded).
+Ours on the same pairs: 0.80 and 0.89.
+
+## Chest radiographs, MIMIC-CXR (2026-10-16, in progress)
+
+Radiograph world model (`runs_wm/cxr_nll`): 2-D U-Net, 128 px window with the central 48 px hidden, log-variance
+head, trained on 79,886 MIMIC training frontal images labelled "No Finding" (val MSE 0.00163 vs 0.0405 for the
+context mean).
+- Unsupervised normal vs abnormal (MIMIC test, configuration chosen on validation): AUROC 0.61 (validation 0.72);
+  per finding vs "No Finding" 0.57-0.66; left-right mirror 0.54.
+- Pointing at NIH ChestX-ray14 boxes (984 boxes, external), top-10 addresses: precision-weighted 0.65, raw error 0.44,
+  mirror 0.22, brightest 0.04 (chance per random point 0.08).
+
+13-finding classification baselines on the official test split (3,403 frontal images; AUROC, uncertain labels left out):
+
+| Method | mean 13 | mean 5 competition | note |
+|---|---|---|---|
+| DenseNet-121, official train split (all ~238k frontal) | 0.786 | 0.807 | no overlap |
+| CheXzero (10-checkpoint ensemble) | 0.678 | 0.777 | trained on all MIMIC images and reports incl. test |
+| torchxrayvision mimic_ch / mimic_nb / all | – | 0.700 / 0.707 / 0.747 | random-split training, test leakage |
+| MedGemma-1.5-4B, P(yes) | 0.673 | 0.729 | MIMIC train in its data |
+| BiomedCLIP | 0.552 | 0.568 | |
+
+Readers (Qwen3-VL-8B LoRA, same recipe and 39k rows from 33,276 training images): global / world-model places /
+fixed places — training.
+
+Disease course on MIMIC pairs (each frontal study with the patient's previous frontal study, prior registered by a 2-D
+affine, median NCC 0.88; report-derived "new finding" labels, not mentioned = negative; 2,752 test pairs). The
+prior-conditioned radiograph world model (`runs_wm/cxr_course`, val MSE 0.0022 vs 0.047 for "current = registered
+prior") does not separate pairs with a new finding as an image-level score: AUROC 0.56 (single-image world model 0.56,
+|current - prior| 0.52; per finding 0.46-0.57). Strictly new findings (prior explicitly negative) are too few for a
+benchmark (effusion 58, edema 39, others < 20); MS-CXR-T would be needed.
+
+Latent radiograph world models (`perr/cxr_latent_wm.py`, `train_cxr_latent_wm.py`): a transformer predicts the patch
+features of hidden 6 x 6 blocks of a frozen encoder from the features of the image with those blocks blanked in pixels
+(no leakage through ViT attention), with a log-variance head, trained on "No Finding" images. MIMIC test, normal vs
+abnormal (configuration chosen on validation):
+
+| World model | validation | test |
+|---|---|---|
+| Pixel (2-D U-Net) | 0.721 | 0.607 |
+| Latent, DINOv2-base (natural images only) | 0.753 | 0.643 |
+| Latent, RAD-DINO (pretrained on 369k MIMIC images incl. test, unlabelled) | 0.788 | 0.687 |
+
+RAD-DINO latent per finding vs "No Finding": pneumothorax 0.77, support devices 0.76, enlarged cardiomediastinum 0.69,
+atelectasis 0.67, edema 0.67, effusion 0.65, lung lesion 0.52, fracture 0.49. In latent space the raw error beat the
+precision-weighted one on validation (0.79 vs 0.57).
+
+MIMIC classification, readers so far (official test split, mean AUROC over 13 / 5 findings):
+
+| Reader | training images | mean 13 | mean 5 |
+|---|---|---|---|
+| DenseNet-121, image only (baseline recipe) | all ~238k | 0.786 | 0.807 |
+| DenseNet-121, image only | 60k subset | 0.775-0.778 | 0.803-0.804 |
+| DenseNet-121, image + registered prior radiograph | same 60k | 0.767 | 0.797 |
+| Qwen3-VL-8B single-finding yes/no reader, image only | 33k | 0.659 | 0.702 |
+
+The prior channel helped on validation (0.789 vs 0.780) but not on test, for nearly every finding. The single-question
+VLM reader mostly learned per-question answer priors (pooled validation AUROC 0.83 but per-finding 0.66 on test).
+
+World-model signal as an extra input, tested and not adopted (MIMIC test, mean AUROC 13 findings):
+- DenseNet with the pixel world model's z-map as one input channel ([X, Z, X]): 60k labels 0.775 vs 0.778 image only;
+  2k labels 0.638 vs 0.662 (validation 0.689 vs 0.708). The 6k / 20k runs were stopped.
+- Late fusion of the 60k DenseNet with the latent (RAD-DINO) world model's image score, weights fitted on validation:
+  0.7731 vs 0.7729.
+- Single-finding VLM reader with the world model's places enlarged: validation 0.831 vs 0.833 for the global image
+  (those enlargements were 168 px tiles of 0.2-side crops, ~1.6x the detail of the 512 px image).

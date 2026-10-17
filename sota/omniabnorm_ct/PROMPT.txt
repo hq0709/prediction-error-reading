@@ -1,0 +1,29 @@
+OmniAbnorm-CT, task "text-guided grounded report generation" (the official evaluate_refer_grounding.py /
+inference.py path): one free-text query per key slice; the model answers with <SEG> (which triggers the segmentation
+module) or with "I don't see any relevant abnormalities on the image.", then writes a report in a second round.
+There is no fixed template in the repo: training and test queries are GPT-4o rewrites of radiology reports, in the
+style of the repo demo ("... Evaluate the uterus for any abnormalities such as enlargement or possible masses ...
+If any, localize it on the image and describe the findings.") and of paper Fig. 3 ("Evaluate the pleural region for
+abnormalities caused by tuberculous empyema. If any, localize and describe."). One fixed query per dataset, in that
+style, naming the target in the model's vocabulary:
+
+LUNA16 (200 eval scans):  "Evaluate the lungs for any lung nodule. If any, localize it on the image and describe the findings."
+MSD Task03 liver (53):    "Evaluate the liver for any liver tumor. If any, localize it on the image and describe the findings."
+
+System message (official format_data): "You are a helpful medical assistant." The image is the key axial slice
+(512 x 512 pixels, min_pixels = max_pixels = 262144 as in format_data).
+
+No size threshold in the query: the slices carry no pixel spacing (the model sees a 512 x 512 image with unknown
+field of view), so "6 mm or larger" / "10 mm or larger" is not observable to it. Location and size come from the
+segmentation mask: every axial slice is a key slice, the 2D masks are stacked into a 3D mask on the cached grid,
+and the fixed rule in common.py picks the component with the highest mean sigmoid probability; the equivalent-sphere
+diameter is the size. The model's own report for the answer is generated once per case on the answer's key slice
+(stored in `raw.report`).
+
+Windows (HU -> 8-bit image; from dataset/config/other_datasets.json, the windows used for the public lesion
+datasets in training):
+LUNA16: [-1150, 350]  (lung window; listed first for LIDC_IDRI, LNDb, MSD_Lung, NSCLC, COVID19, MosMed)
+Liver:  [-140, 260]   (abdominal soft-tissue window; listed for MSD_Liver together with [-50, 150], and for every
+                       abdominal dataset in the config; the standard display window of the Radiopaedia images that
+                       are the only training data of the text-guided task)
+Fixed before any run; not tuned.
