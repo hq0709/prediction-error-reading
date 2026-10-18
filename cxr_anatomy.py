@@ -27,6 +27,8 @@ GRID = 128
 def keys_for(which):
     if which == "nih":
         return pd.read_csv(f"{ROOT}/results/cxr_nih.csv").key.tolist()
+    if which == "pairs":                                            # current images of the interval-change pairs
+        return pd.read_csv(f"{ROOT}/results/cxr_change_labels.csv").key.tolist()
     if which == "cxdet":
         return sorted("cxdet/" + f[:-4] for f in os.listdir(f"{CACHE}/cxdet") if f.endswith(".npy"))
     d = pd.read_csv(f"{ROOT}/results/cxr_mimic.csv")             # validation / test images and "No Finding" training images

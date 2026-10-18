@@ -137,6 +137,29 @@ def locate(model, codec, keys, bs=16):
     return out
 
 
+def score_sets(out, sets=("mimic_validate", "mimic_test", "nih_test")):
+    """P(yes) per finding on the world model's other evaluation images, and the pointed place on NIH (MIMIC has no
+    boxes)."""
+    proc = AutoProcessor.from_pretrained(Q8)
+    proc.tokenizer.padding_side = "left"
+    codec = Codec(proc)
+    base = AutoModelForImageTextToText.from_pretrained(Q8, dtype=torch.bfloat16, device_map={"": 0})
+    model = PeftModel.from_pretrained(base, f"{out}/lora_best").eval()
+    run = os.path.basename(out.rstrip("/"))
+    os.makedirs(f"results/cxr_focal/{run}", exist_ok=True)
+    for st in sets:
+        keys = sorted({json.loads(l)["key"] for l in open(f"data/cxr_focal/wm/{st}.jsonl")})
+        p = presence(model, codec, keys)
+        loc = locate(model, codec, keys) if st.startswith("nih") else {}
+        with open(f"results/cxr_focal/{run}/{st}.jsonl", "w") as f:
+            for k, q in zip(keys, p):
+                for j, t in enumerate(TYPES):
+                    x, y = loc.get((k, t), (256.0, 256.0))
+                    f.write(json.dumps({"key": k, "i": j, "r": y, "c": x, "wm": 1.0, "src": "wm", "rank": 0,
+                                        **{f"p_{u}": (float(q[j]) if u == t else 0.0) for u in TYPES}}) + "\n")
+        print(f"scored {st}: {len(keys)} images", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
@@ -144,8 +167,12 @@ def main():
     ap.add_argument("--bs", type=int, default=8)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--rank", type=int, default=16)
+    ap.add_argument("--train-keys", default=None, help="only these training images (few-box settings)")
+    ap.add_argument("--score-sets", action="store_true", help="MIMIC validate/test and NIH with the trained adapter")
     a = ap.parse_args()
     random.seed(0); torch.manual_seed(0)
+    if a.score_sets:
+        return score_sets(a.out)
     g = pd.read_csv("results/cxr_cxdet.csv")
     b = boxes("cxdet")
     train_keys = sorted(g[g.split == "train"].key)
@@ -155,6 +182,9 @@ def main():
     random.Random(0).shuffle(fkeys)
     val_keys = fkeys[:len(fkeys) // 10]
     tr_keys = [k for k in train_keys if k not in set(val_keys)]
+    if a.train_keys:
+        allowed = set(open(a.train_keys).read().split())
+        tr_keys = [k for k in tr_keys if k in allowed]
     test_keys = sorted(g[g.split == "test"].key)
     tg = targets_of(b, tr_keys + val_keys + test_keys)
     lab = {k: [int(t in tg[k]) for t in TYPES] for k in tg}
@@ -228,8 +258,9 @@ def main():
     for name, keys in (("cxdet_test", test_keys),):
         p = presence(model, codec, keys)
         loc = locate(model, codec, keys)
-        os.makedirs("results/cxr_focal/cxr_oneshot", exist_ok=True)
-        with open(f"results/cxr_focal/cxr_oneshot/{name}.jsonl", "w") as f:
+        run = os.path.basename(a.out.rstrip("/"))
+        os.makedirs(f"results/cxr_focal/{run}", exist_ok=True)
+        with open(f"results/cxr_focal/{run}/{name}.jsonl", "w") as f:
             for k, q in zip(keys, p):
                 for j, t in enumerate(TYPES):
                     x, y = loc[(k, t)]

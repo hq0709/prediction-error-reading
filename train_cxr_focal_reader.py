@@ -3,12 +3,20 @@ the place at ~native detail) and answers yes or no for nodule, mass, calcified g
 Qwen3-VL-8B with LoRA on language + vision (the lung CT reader's recipe), loss on the four answer tokens.
 
 Training rows: ChestX-Det train images minus a held-out tenth (validation, by image): every box-centre row, every
-world-model address that lies in a box, and ten other world-model addresses per image per epoch. Validation: mean
+world-model address that lies in a box, and ten other world-model addresses per image per epoch. With --mimic-rows, also
+MIMIC training images with report labels only (multiple-instance rows): on each image, the address where a previous
+reader's P(nodule or mass) is highest carries the image's "Lung Lesion" label and the address where its P(fracture) is
+highest carries the "Fracture" label; only those answers are trained (the others are filled with the previous reader's
+answers and carry no loss), uncertain labels are skipped. With --mil-silence skip, a finding the report does not mention
+gives no row (only stated findings and stated absences do), and with --mil-gate g a stated finding gives a row only where
+the previous reader's probability there is at least g. Validation: mean
 address-level AUROC over the four findings on all addresses of the held-out images; the best epoch's adapter scores
 every address of the evaluation sets (data/cxr_focal/<proposer>/<set>.jsonl) into results/cxr_focal/<name>/<set>.jsonl.
 
     CUDA_VISIBLE_DEVICES=0 python train_cxr_focal_reader.py --out runs_reader/cxr_focal
     CUDA_VISIBLE_DEVICES=0 python train_cxr_focal_reader.py --out runs_reader/cxr_focal --score-only wm/nih_test wm/mimic_test
+    CUDA_VISIBLE_DEVICES=0 python train_cxr_focal_reader.py --out runs_reader/cxr_focal_mil \
+        --mimic-rows results/cxr_focal/cxr_focal/wm_mimic_train.jsonl
 """
 import argparse
 import json
@@ -98,6 +106,38 @@ def auroc(p, y):
     return float((ranks[:len(pos)].sum() - len(pos) * (len(pos) + 1) / 2) / (len(pos) * len(neg)))
 
 
+def mimic_rows(path, silence="negative", gate=0.0):
+    """Multiple-instance rows from MIMIC report labels (see the module docstring); path: a reader's scored rows."""
+    from perr.cxr import mimic_frontal
+    m = mimic_frontal()
+    m["key"] = "mimic/" + m.dicom_id
+    lab = m.set_index("key")[["Lung Lesion", "Fracture"]]
+    views = {(r["key"], r["i"]): r["view"] for r in load(f"{DATA}/wm/mimic_train.jsonl")}
+    by = {}
+    for r in load(path):
+        by.setdefault(r["key"], []).append(r)
+    out = []
+    for k, rs in by.items():
+        for finding, idx, score in (("Lung Lesion", (0, 1), lambda r: max(r["p_Nodule"], r["p_Mass"])),
+                                    ("Fracture", (3,), lambda r: r["p_Fracture"])):
+            y = lab.loc[k, finding]
+            if y == -1 or (silence == "skip" and np.isnan(y)):
+                continue
+            r = max(rs, key=score)
+            if y == 1 and score(r) < gate:
+                continue
+            prev = [int(r[f"p_{t}"] > 0.5) for t in TYPES]
+            ans, mask = list(prev), [0] * len(TYPES)
+            if y == 1:      # the more likely of nodule / mass at the chosen place
+                j = idx[int(np.argmax([r[f"p_{TYPES[i]}"] for i in idx]))]
+                ans[j], mask[j] = 1, 1
+            else:
+                for j in idx:
+                    ans[j], mask[j] = 0, 1
+            out.append({"key": k, "i": r["i"], "view": views[(k, r["i"])], "src": "mimic", "y": ans, "m": mask})
+    return out
+
+
 def write_scores(model, codec, name, sets):
     for s in sets:
         rows = load(f"{DATA}/{s}.jsonl")
@@ -120,6 +160,16 @@ def main():
     ap.add_argument("--neg", type=int, default=10)
     ap.add_argument("--score-only", nargs="*", default=None)
     ap.add_argument("--sets", nargs="*", default=["wm/cxdet_test"])
+    ap.add_argument("--train-keys", default=None, help="only these training images (few-box settings)")
+    ap.add_argument("--mimic-rows", default=None, help="a reader's scored MIMIC training addresses (report-label rows)")
+    ap.add_argument("--mil-silence", default="negative", choices=("negative", "skip"),
+                    help="a finding the report does not mention: a negative row, or no row")
+    ap.add_argument("--mil-gate", type=float, default=0.0, help="a stated finding gives a row only where the previous "
+                    "reader's probability is at least this")
+    ap.add_argument("--proposer", default="wm", help="address source of the ChestX-Det training rows (wm, wmu)")
+    ap.add_argument("--hard-from", default=None, help="a reader's scored ChestX-Det training addresses (hard negatives)")
+    ap.add_argument("--hard", type=int, default=0, help="per image and epoch, this many of the --neg negatives are the "
+                                                         "addresses that reader scored highest")
     a = ap.parse_args()
     random.seed(0); torch.manual_seed(0)
     name = os.path.basename(a.out.rstrip("/"))
@@ -131,19 +181,32 @@ def main():
         model = PeftModel.from_pretrained(base, f"{a.out}/lora_best").eval()
         return write_scores(model, codec, name, a.score_only)
 
-    rows = load(f"{DATA}/wm/cxdet_train.jsonl")
+    rows = load(f"{DATA}/{a.proposer}/cxdet_train.jsonl")
     keys = sorted({r["key"] for r in rows})
     random.Random(0).shuffle(keys)
     val_keys = set(keys[:len(keys) // 10])
     tr = [r for r in rows if r["key"] not in val_keys]
+    if a.train_keys:
+        allowed = set(open(a.train_keys).read().split())
+        tr = [r for r in tr if r["key"] in allowed]
     va = [r for r in rows if r["key"] in val_keys and r["src"] == "wm"]
     pos_tr = [r for r in tr if r["src"] == "gt" or any(r[t] for t in TYPES)]
     neg_by = {}
     for r in tr:
         if r["src"] == "wm" and not any(r[t] for t in TYPES):
             neg_by.setdefault(r["key"], []).append(r)
-    per_epoch = len(pos_tr) + sum(min(a.neg, len(v)) for v in neg_by.values())
-    print(f"train images {len(keys) - len(val_keys)}, positive rows {len(pos_tr)}, ~{per_epoch} rows per epoch; "
+    for r in tr:
+        r["y"], r["m"] = [r[t] for t in TYPES], [1] * len(TYPES)
+    hard_by = {}
+    if a.hard_from:     # negatives ranked by the previous reader's highest answer: the places that win the max falsely
+        prev = {(r["key"], r["i"]): max(r[f"p_{t}"] for t in TYPES) for r in load(a.hard_from)}
+        for k, v in neg_by.items():
+            v = sorted(v, key=lambda r: -prev.get((r["key"], r["i"]), 0.0))
+            hard_by[k], neg_by[k] = v[:a.hard], v[a.hard:]
+    mil = mimic_rows(a.mimic_rows, a.mil_silence, a.mil_gate) if a.mimic_rows else []
+    per_epoch = len(pos_tr) + sum(min(a.neg, len(v) + len(hard_by.get(k, []))) for k, v in neg_by.items()) + len(mil)
+    print(f"train images {len(keys) - len(val_keys)}, positive rows {len(pos_tr)}, MIMIC report-label rows {len(mil)} "
+          f"({sum(1 for r in mil if any(y and m for y, m in zip(r['y'], r['m'])))} positive), ~{per_epoch} rows per epoch; "
           f"validation {len(val_keys)} images, {len(va)} addresses", flush=True)
 
     base.gradient_checkpointing_enable()
@@ -162,18 +225,21 @@ def main():
 
     best, g, log = -1.0, 0, []
     for ep in range(a.epochs):
-        epoch = pos_tr + [r for v in neg_by.values() for r in random.sample(v, min(a.neg, len(v)))]
+        epoch = pos_tr + mil + [r for k, v in neg_by.items()
+                                for r in hard_by.get(k, []) + random.sample(v, max(0, min(a.neg - len(hard_by.get(k, [])), len(v))))]
         random.shuffle(epoch)
         tot = 0.0
         for st in range(0, len(epoch), a.bs):
             chunk = epoch[st:st + a.bs]
-            ans = [[r[t] for t in TYPES] for r in chunk]
+            ans = [r["y"] for r in chunk]
             enc, pos = codec.batch(chunk, ans)
             enc = enc.to(model.device)
             lg = model(**enc).logits[torch.arange(len(chunk))[:, None], pos.to(model.device) - 1].float()
             tgt = torch.tensor(ans, device=model.device)
+            msk = torch.tensor([r["m"] for r in chunk], device=model.device, dtype=torch.float32).view(-1)
             two = torch.stack([lg[..., codec.no], lg[..., codec.yes]], -1)
-            loss = torch.nn.functional.cross_entropy(two.view(-1, 2), tgt.view(-1))
+            ce = torch.nn.functional.cross_entropy(two.view(-1, 2), tgt.view(-1), reduction="none")
+            loss = (ce * msk).sum() / msk.sum()
             for grp in opt.param_groups:
                 grp["lr"] = sched(g)
             loss.backward()

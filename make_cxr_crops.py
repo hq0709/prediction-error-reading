@@ -16,6 +16,7 @@ cache/cxr_crops_<design>/<key>.pts.npy, for the 60k training images and every va
     python make_cxr_crops.py wm
     python make_cxr_crops.py grid
     python make_cxr_crops.py grid all      # every training image (full-data runs)
+    python make_cxr_crops.py focal nih     # the NIH box images / ChestX-Det (cxdet), for pointing evaluations
 """
 import os
 import sys
@@ -40,7 +41,8 @@ def addresses(key, img):
     if DESIGN == "grid":
         return grid_points(img)
     if DESIGN == "focal_random":
-        rng = np.random.default_rng(int(key.split("-")[-1], 16) % 2 ** 32)
+        rng = np.random.default_rng(int(key.split("-")[-1], 16) % 2 ** 32 if key.startswith("mimic/")
+                                    else int.from_bytes(key.encode()[-8:], "little") % 2 ** 32)
         return peaks(rng.random((512, 512)).astype(np.float32), search_domain(key, valid_region(img)), k=K, nms=16)
     if DESIGN == "focal":
         R = np.load(f"{WM}/{key}.cxrR.npy").astype(np.float32)
@@ -81,6 +83,14 @@ def work(item):
 if __name__ == "__main__":
     DESIGN = sys.argv[1]
     K, CROP_FRAC = SETTINGS.get(DESIGN, (K, CROP_FRAC))
+    if len(sys.argv) > 2 and sys.argv[2] in ("nih", "cxdet"):          # external box sets (pointing evaluations)
+        import pandas as pd
+        g = pd.read_csv(f"results/cxr_{sys.argv[2]}.csv")
+        paths = g.path if "path" in g else [f"/raid/home/CAMCA/hj880/data_ext/chestx_det/images/{s_}/{i}" for s_, i in zip(g.split, g.image)]
+        with Pool(64) as p:
+            ok = p.map(work, list(zip(g.key, paths)), chunksize=8)
+        print(f"{DESIGN} {sys.argv[2]}: {sum(ok)} of {len(g)} images have crops", flush=True)
+        sys.exit(0)
     m = mimic_frontal()
     m["key"] = "mimic/" + m.dicom_id
     if len(sys.argv) > 2 and sys.argv[2] == "all":

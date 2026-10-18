@@ -10,8 +10,11 @@ Calcification, Fracture.
     python cxr_focal_data.py cxdet            # ChestX-Det train (world-model candidates + box centres) and test
     python cxr_focal_data.py nih              # NIH box images
     python cxr_focal_data.py mimic            # MIMIC validation and test images
+    python cxr_focal_data.py mimic_train      # MIMIC training images for report-label training (results/cxr_mil_keys.txt)
     python cxr_focal_data.py cxdet --proposer patchcore|random   # ablations: other address sources, same views
     python cxr_focal_data.py cxdet --proposer grid    # every place (25 px lattice over the thorax): reading without a proposer
+    python cxr_focal_data.py cxdet --proposer wmh|wmu # the 1024-grid world model / both world models in turn
+    python cxr_focal_data.py cxdet --proposer wmr     # ablation: the world model's addresses over the whole radiograph
 
 Writes data/cxr_focal/<proposer>/<set>.jsonl (one row per address) and the views under data/cxr_focal/views/.
 """
@@ -40,11 +43,24 @@ PROPOSER = "wm"
 
 def addresses(key):
     img = np.load(f"{CACHE}/{key}.npy")
-    D = search_domain(key, valid_region(img))
-    if PROPOSER == "wm":
-        R = np.load(f"{ROOT}/cache/cxr_wm/{key}.cxrR.npy").astype(np.float32)
-        S = np.load(f"{ROOT}/cache/cxr_wm/{key}.cxrS.npy").astype(np.float32)
+    D = search_domain(key, valid_region(img)) if PROPOSER != "wmr" else valid_region(img)
+    if PROPOSER in ("wm", "wmh", "wmr"):                                 # wmh: the 1024-grid world model (train_cxr_wm.py --canvas 1024)
+        t = "cxrh" if PROPOSER == "wmh" else "cxr"
+        R = np.load(f"{ROOT}/cache/cxr_wm/{key}.{t}R.npy").astype(np.float32)
+        S = np.load(f"{ROOT}/cache/cxr_wm/{key}.{t}S.npy").astype(np.float32)
         W = error_map(R, S, 2.0, 1)
+    elif PROPOSER == "wmu":                                       # both: addresses taken in turn, repeats within 16 px dropped
+        lists = []
+        for t in ("cxr", "cxrh"):
+            R = np.load(f"{ROOT}/cache/cxr_wm/{key}.{t}R.npy").astype(np.float32)
+            S = np.load(f"{ROOT}/cache/cxr_wm/{key}.{t}S.npy").astype(np.float32)
+            lists.append(peaks(error_map(R, S, 2.0, 1), D, k=K, nms=NMS))
+        out = []
+        for a, b in zip(*lists):
+            for p in (a, b):
+                if all(max(abs(p[0] - q[0]), abs(p[1] - q[1])) > NMS for q in out):
+                    out.append(p)
+        return out[:2 * K]
     elif PROPOSER == "patchcore":
         W = ndi.zoom(np.load(f"{ROOT}/cache/cxr_maps/patchcore/{key}.npy").astype(np.float32), 512 / 37, order=1)
     elif PROPOSER == "grid":                                       # every place: a 25 px lattice over the thorax
@@ -107,12 +123,15 @@ def items(which):
         for (_, r), s in zip(g.iterrows(), split):
             path = r.path if "path" in g else f"/raid/home/CAMCA/hj880/data_ext/chestx_det/images/{s}/{r.image}"
             yield s, (r.key, path, {"scale": r.scale, "pad_x": r.pad_x, "pad_y": r.pad_y}, by.get(r.key, []),
-                      s == "train" and PROPOSER == "wm")
+                      s == "train" and PROPOSER in ("wm", "wmu"))
     else:
         from perr.cxr import letterbox, mimic_frontal                     # noqa: F401
         m = mimic_frontal()
         m["key"] = "mimic/" + m.dicom_id
-        m = m[m.split.isin(["validate", "test"])]
+        if which == "mimic_train":
+            m = m[(m.split == "train") & m.key.isin(set(open(f"{ROOT}/results/cxr_mil_keys.txt").read().split()))]
+        else:
+            m = m[m.split.isin(["validate", "test"])]
         for r in m.itertuples():
             w, h = r.Columns, r.Rows
             s = 512 / max(w, h)
@@ -123,8 +142,8 @@ def items(which):
 def main():
     global PROPOSER
     ap = argparse.ArgumentParser()
-    ap.add_argument("which", choices=["cxdet", "nih", "mimic"])
-    ap.add_argument("--proposer", choices=["wm", "patchcore", "random", "grid"], default="wm")
+    ap.add_argument("which", choices=["cxdet", "nih", "mimic", "mimic_train"])
+    ap.add_argument("--proposer", choices=["wm", "wmh", "wmu", "wmr", "patchcore", "random", "grid"], default="wm")
     ap.add_argument("--split", default=None, help="only this split (e.g. test)")
     a = ap.parse_args()
     PROPOSER = a.proposer
@@ -134,7 +153,7 @@ def main():
     os.makedirs(f"{OUT}/{PROPOSER}", exist_ok=True)
     for split in sorted({s for s, _ in its}):
         rows = [r for (s, _), rr in zip(its, res) if s == split for r in rr]
-        with open(f"{OUT}/{PROPOSER}/{a.which}_{split}.jsonl", "w") as f:
+        with open(f"{OUT}/{PROPOSER}/{a.which.split('_')[0]}_{split}.jsonl", "w") as f:
             for r in rows:
                 f.write(json.dumps(r) + "\n")
         pos = {t: sum(r[t] for r in rows) for t in TYPES}

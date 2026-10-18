@@ -420,3 +420,173 @@ Enlarging the focal addresses does not help the MIMIC classifier: two-stream Den
 (0.1-side crops; `make_cxr_crops.py focal`, `train_cxr_evidence.py --crops focal`), same 60k images: test mean 13 0.773
 (lung lesion 0.704, fracture 0.685, pleural other 0.801) vs ten random thorax views 0.777 (0.715, 0.689, 0.852) vs image
 only 0.778 (0.702, 0.706, 0.870).
+
+MIMIC interval change (new, `label_cxr_change.py`, `train_cxr_course.py`). Labels: for each pair with a report in the
+R2Gen annotation (21,036 pairs; official splits), Qwen3-8B (no thinking) reads the current report and says per finding
+worse / same / better / none; an answer is kept only when one sentence names the finding together with a word of that
+change (the LLM alone turned "No pneumothorax." into "better"). 11,566 pairs carry at least one label (test 1,304).
+Readers (DenseNet-121, [current, registered prior, difference] at 320 px, epoch on the official validation split):
+
+| Reader | test mean macro-F1 (3 classes, 8 findings) | AUROC worse | AUROC better |
+|---|---|---|---|
+| comparison only | 0.421 | 0.70 | 0.68 |
+| + six paired views at the course world model's change addresses | 0.412 | 0.65 | 0.66 |
+| + six paired views at random thorax points | 0.384 | 0.66 | 0.65 |
+
+The change views help consolidation (0.564 vs 0.526) and devices (0.364 vs 0.310), and cost effusion and pneumothorax.
+
+Focal findings read at the world model's addresses (ChestX-Det, the CT recipe on radiographs). `cxr_focal_data.py`
+renders each of the world model's top-30 thorax addresses (sigma 2, brighter, 16 px suppression) from the original image
+as a context crop (0.3 of the longer side, the place outlined) next to the place itself (0.1, ~native detail);
+`train_cxr_focal_reader.py` trains Qwen3-VL-8B LoRA (LM + vision, 2 epochs) to answer yes / no for nodule, mass,
+calcified granuloma and fracture at the outlined place (labels: the address lies in a radiologist box; plus box-centre
+rows), on ChestX-Det train minus a held-out tenth (address AUROC there 0.898). The image answer is the maximum over the
+addresses and the pointed place is that address. Same training images for every method; `collect_cxr_focal.py`:
+
+| ChestX-Det test, mean over nodule / mass / calcification / fracture | AUROC | hit | LROC |
+|---|---|---|---|
+| world-model addresses + reader (30 addresses, max-p) | 0.818 | 0.589 | 0.533 |
+| world-model addresses + reader (WM x reader) | 0.822 | 0.583 | 0.528 |
+| ... 10 addresses | 0.780 | 0.508 | 0.470 |
+| one-shot reader, same Qwen3-VL-8B recipe (answer + point on the whole radiograph) | 0.715 | 0.378 | 0.301 |
+| Faster R-CNN (ResNet-50 FPN v2, box-supervised) | 0.808 | 0.629 | 0.546 |
+| 10% of the boxed training images: reader | 0.671 | 0.351 | 0.271 |
+| 10% of the boxed training images: Faster R-CNN | 0.529 | 0.182 | 0.137 |
+| 25% of the boxed training images: Faster R-CNN | 0.610 | 0.305 | 0.244 |
+
+(hit: the pointed place lies in a box of the finding, among images with one; LROC: area under the localisation ROC,
+a positive counts only when correctly pointed.) Per finding, hits of the reader vs Faster R-CNN: nodule 0.61 vs 0.58,
+mass 0.70 vs 0.70, calcification 0.55 vs 0.63, fracture 0.50 vs 0.61; the gaps follow the world model's recall
+(fracture and calcification are its weakest). Few-box subsets keep every training image without a focal finding as a
+negative (`results/cxr_cxdet_boxes{10,25}_keys.txt`: 72 / 180 of the 720 boxed images).
+
+Focal reading, continued (2026-10-17 evening). Same reader, more address sources and baselines (`collect_cxr_focal.py`,
+ChestX-Det test, mean over nodule / mass / calcification / fracture; per-finding hits in the script output):
+
+| Address source for the same reader (full boxes) | views per image | AUROC | hit | LROC |
+|---|---|---|---|---|
+| both world models (512 and 1024 grids, taken in turn), 60 addresses | 45 | **0.834** | **0.620** | **0.565** |
+| both world models, 30 addresses | 30 | 0.824 | 0.583 | 0.537 |
+| 512 world model, 30 addresses | 30 | 0.818 | 0.589 | 0.533 |
+| 1024 world model, 30 addresses | 30 | 0.814 | 0.571 | 0.516 |
+| every lattice place (25 px, no proposer) | 172 | 0.826 | 0.518 | 0.473 |
+| PatchCore (RAD-DINO), 30 addresses | 30 | 0.789 | 0.519 | 0.475 |
+| random thorax points, 30 | 30 | 0.760 | 0.263 | 0.238 |
+| 512 world model over the whole radiograph (no thorax domain), 30 | 30 | 0.755 | 0.487 | 0.434 |
+| 512 world model alone (its error at the top address, no reader) | 30 | 0.516 | 0.158 | 0.083 |
+
+The proposer earns its place twice: reading every place costs four times the views and points worse (hit 0.518 vs
+0.620; more places, more chances for a false maximum), and the reader at random places still detects (context crops
+cover much of the lung) but cannot point (0.263). Per finding, the 1024 grid adds calcifications (hit 0.684 vs 0.553)
+and loses masses (0.545 vs 0.697); the union keeps most of both.
+
+| Baselines on the same training images | AUROC | hit | LROC |
+|---|---|---|---|
+| Faster R-CNN (ResNet-50 FPN v2) | 0.808 | 0.629 | 0.546 |
+| FCOS (ResNet-50 FPN) | 0.715 | 0.458 | 0.383 |
+| one-shot Qwen3-VL-8B (answer + point, same LoRA recipe) | 0.715 | 0.378 | 0.301 |
+
+| Few boxes (boxed training images kept; all images without a focal finding kept as negatives) | AUROC | hit | LROC |
+|---|---|---|---|
+| 25%: reader, both world models (60) | **0.758** | **0.474** | **0.406** |
+| 25%: reader, 512 world model (30) | 0.756 | 0.432 | 0.369 |
+| 25%: Faster R-CNN | 0.610 | 0.305 | 0.244 |
+| 25%: one-shot Qwen3-VL-8B | 0.642 | 0.169 | 0.132 |
+| 10%: reader, both world models (60) | **0.679** | **0.406** | **0.312** |
+| 10%: reader, 512 world model (30) | 0.671 | 0.351 | 0.271 |
+| 10%: Faster R-CNN | 0.529 | 0.182 | 0.137 |
+| 10%: one-shot Qwen3-VL-8B | 0.586 | 0.206 | 0.127 |
+
+NIH external boxes (reader trained on ChestX-Det, unchanged; hit among boxed images, `collect_cxr_nih.py`): nodule
+0.494 / mass 0.529 with world-model addresses, 0.367 / 0.600 with PatchCore, 0.152 / 0.412 with random points.
+
+Whole-image VLM readers on MIMIC are not helped by world-model tiles: Qwen3-VL-8B LoRA on the radiograph plus six
+160 px tiles at the world model's focal addresses (`train_cxr_ml.py --design focal`) 0.762 test mean 13, tiles at random
+thorax points 0.767, radiograph only 0.766.
+
+Focal reading, final round (2026-10-18). All baselines trained on the same ChestX-Det training images and held-out tenth
+(`train_cxr_detector.py --arch frcnn|retinanet|fcos`, `train_cxr_yolo.py`, `train_cxr_detr.py`, `train_cxr_oneshot.py`);
+YOLO is scored with conf 1e-6 so a weak model still ranks every image (at 1e-3 the 10%-box YOLO output nothing).
+
+| ChestX-Det test (mean of 4 findings) | AUROC | hit | LROC |
+|---|---|---|---|
+| Faster R-CNN (R50-FPN v2) | 0.808 | 0.629 | 0.546 |
+| RetinaNet (R50-FPN v2) | 0.767 | 0.577 | 0.505 |
+| FCOS (R50-FPN) | 0.715 | 0.458 | 0.383 |
+| YOLO11m | 0.800 | **0.662** | **0.584** |
+| RT-DETRv2-R50 | 0.823 | 0.609 | 0.558 |
+| Deformable DETR (R50) | 0.775 | 0.574 | 0.503 |
+| one-shot Qwen3-VL-8B (answer + point) | 0.715 | 0.378 | 0.301 |
+| both world models + reader trained on their addresses (`cxr_focal_wmu`) | **0.847** | 0.650 | **0.584** |
+
+Few boxes, added YOLO11m: 25% 0.591 / 0.217 / 0.157, 10% 0.496 / 0.100 / 0.070 (reader 0.758 / 0.474 / 0.406 and
+0.679 / 0.406 / 0.312).
+
+Hard negatives (round 2: half of each image's negatives are the addresses the first reader rated highest,
+`--hard-from --hard 5`) hurt: held-out tenth 0.835 / 0.566 / 0.533 vs 0.851 / 0.592 / 0.564, test 0.801 / 0.630 / 0.555.
+Not used.
+
+MIMIC-CXR official test, readers and detectors trained on ChestX-Det boxes, applied unchanged
+(`score_cxr_focal_mimic.py`, fixed rules: lesion = nodule or mass, every address read, combination = mean of rank-
+normalised scores with the DenseNet-121 trained on all 238k MIMIC training images; the validation split has only 18
+fracture positives, so nothing is chosen on it). Positives: Lung Lesion 121, Fracture 87.
+
+| MIMIC test AUROC | Lung Lesion | + DenseNet | Fracture | + DenseNet |
+|---|---|---|---|---|
+| DenseNet-121, MIMIC report labels (238k images) | 0.705 | | 0.739 | |
+| Faster R-CNN | 0.698 | 0.742 | 0.641 | 0.731 |
+| RetinaNet | 0.599 | 0.692 | 0.633 | 0.726 |
+| FCOS | 0.610 | 0.707 | 0.599 | 0.715 |
+| YOLO11m | 0.653 | 0.717 | 0.632 | 0.734 |
+| RT-DETRv2-R50 | 0.683 | 0.737 | 0.679 | 0.755 |
+| Deformable DETR | 0.693 | 0.744 | 0.634 | 0.737 |
+| one-shot Qwen3-VL-8B | 0.647 | 0.706 | 0.585 | 0.713 |
+| 512 world model alone (no reader) | 0.519 | 0.649 | 0.490 | 0.667 |
+| reader trained on 512 addresses, reads both world models' | 0.719 | 0.750 | 0.746 | 0.786 |
+| reader trained on both world models' addresses (`cxr_focal_wmu`) | **0.725** | **0.754** | **0.758** | **0.792** |
+
+Report labels as multiple-instance rows (first try, 512 reader, `--mimic-rows`; the address the previous reader rates
+highest carries the image's report label, a finding the report does not mention counted as absent): Lung Lesion
+0.731 (both world models) but Fracture 0.701. Diagnosis on MIMIC test: the fraction of fracture-positive images
+scored above 0.5 fell from 0.49 to 0.34 while negatives' median rose from 0.07 to 0.20 — reports often leave old
+fractures unmentioned, so their most fracture-like place was trained as "no", and positives at places the reader did not
+favour raised every score. On the union reader, three ways of using the report labels (5,780 MIMIC training images,
+1,597 Lung Lesion and 1,204 Fracture positives), none better than no report labels on the validation split (mean of the
+two AUROCs, the rule fixed before scoring) or on test:
+
+| Union reader + MIMIC report labels | val Lung Lesion | val Fracture | test Lung Lesion | test Fracture | ChestX-Det test AUROC / hit / LROC |
+|---|---|---|---|---|---|
+| none (`cxr_focal_wmu`, the final reader) | **0.785** | 0.740 | **0.725** | **0.758** | **0.847 / 0.650 / 0.584** |
+| silence counted as absence (`--mimic-rows`) | 0.769 | 0.683 | 0.701 | 0.738 | 0.837 / 0.609 / 0.567 |
+| stated findings only (`--mil-silence skip`) | 0.608 | 0.465 | 0.575 | 0.669 | 0.810 / 0.584 / 0.523 |
+| stated and already seen (`--mil-silence skip --mil-gate 0.5`) | 0.745 | **0.755** | 0.714 | 0.751 | 0.831 / 0.601 / 0.555 |
+
+Positives at the reader's top place without a negative counterweight (stated findings only) teach "yes" at arbitrary
+anatomy: both AUROCs collapse. Gating the positives to places the reader already favours is harmless but adds nothing.
+The final reader is trained on ChestX-Det boxes only.
+
+Ablation, one component at a time (`collect_cxr_ablation.py`; MIMIC test AUROC of the reader alone):
+
+| WM addresses | thorax domain | verifier | 1024 WM | trained on union | ChestX-Det AUROC | hit | LROC | MIMIC Lung Lesion | MIMIC Fracture |
+|---|---|---|---|---|---|---|---|---|---|
+| | ✓ | ✓ | | | 0.760 | 0.263 | 0.238 | 0.669 | 0.688 |
+| ✓ | | ✓ | | | 0.755 | 0.487 | 0.434 | 0.645 | 0.741 |
+| ✓ | ✓ | | | | 0.516 | 0.158 | 0.083 | 0.519 | 0.490 |
+| ✓ | ✓ | ✓ | | | 0.818 | 0.589 | 0.533 | 0.684 | **0.772** |
+| ✓ | ✓ | ✓ | ✓ | | 0.834 | 0.620 | 0.565 | 0.719 | 0.746 |
+| ✓ | ✓ | ✓ | ✓ | ✓ | **0.847** | **0.650** | **0.584** | **0.725** | 0.758 |
+
+(first row: random thorax points; second: the 512 world model's addresses over the whole radiograph; third: the world
+model's error at its best address, no reader.) Adding the 1024 world model, with the reader trained on both, trades a
+little MIMIC fracture (0.772 to 0.758) for lung lesions (0.684 to 0.725) and every ChestX-Det metric.
+
+NIH external pointing (radiologist boxes, 79 nodule / 85 mass images; reader and detectors trained on ChestX-Det,
+unchanged): final reader 0.494 / 0.529; Faster R-CNN 0.405 / **0.671**, FCOS **0.532** / 0.412, YOLO11m 0.506 / 0.471,
+RT-DETRv2 0.506 / 0.553, Deformable DETR 0.430 / 0.565, RetinaNet 0.380 / 0.482, one-shot 0.418 / 0.529. No method
+leads on both; with 79 / 85 images one image is 0.012.
+
+Verdict for radiographs: the world model's addresses, read inside the thorax by a verifier trained on its own
+addresses, give the best AUROC on ChestX-Det focal findings (0.847 vs 0.823 for the best of six detectors), tie the best
+detector on LROC, win by a wide margin with few boxes, and transfer to MIMIC-CXR better than every detector and than a
+DenseNet trained on 238k MIMIC report labels (Lung Lesion 0.725 vs 0.705, Fracture 0.758 vs 0.739; with that DenseNet
+0.754 and 0.792). Pointing on ChestX-Det is second to YOLO11m (0.650 vs 0.662).
