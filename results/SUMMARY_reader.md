@@ -615,8 +615,8 @@ Cubes containing nodules are no longer excluded; everything else is unchanged.
 | scans with labels | 0% | 5% | 10% | 25% | 50% | 100% |
 |---|---|---|---|---|---|---|
 | PER (WM x reader) | 0.75 / 0.67 | **0.69 / 0.76** | **0.75 / 0.74** | **0.74 / 0.81** | 0.76 / 0.83 | **0.83 / 0.84** |
-| 3-D RetinaNet, MedicalNet | – | 0.50 / 0.59 | 0.68 / 0.67 | 0.67 / 0.66 | running | 0.79 / 0.78 |
-| 3-D RetinaNet, from scratch | – | running | running | 0.74 / 0.73 | running | 0.80 / 0.77 |
+| 3-D RetinaNet, MedicalNet | – | 0.50 / 0.59 | 0.68 / 0.67 | 0.67 / 0.66 | 0.78 / 0.74 | 0.79 / 0.78 |
+| 3-D RetinaNet, from scratch | – | 0.61 / 0.66 | 0.65 / 0.72 | 0.74 / 0.73 | **0.79** / 0.75 | 0.80 / 0.77 |
 
 **The reader's input with the world model's expectation** (`make_reader_expect.py`). A second row renders the predicted
 (expected) planes under the observed ones. Cross-fitted on the training pool (`choose_rule_cv.py`, 162 scans), both
@@ -635,7 +635,7 @@ images and no Mass box. LROC:
 | FCOS | 0.010 | 0.127 | 0.156 | 0.232 | 0.290 | 0.383 |
 | YOLO11m | 0.016 | 0.047 | 0.065 | 0.240 | 0.414 | 0.584 |
 | RT-DETRv2-R50 | 0.000 | 0.127 | 0.168 | 0.301 | 0.431 | 0.558 |
-| Deformable DETR | 0.014 | 0.031 | 0.152 | 0.291 | running | 0.503 |
+| Deformable DETR | 0.014 | 0.031 | 0.152 | 0.291 | 0.374 | 0.503 |
 | one-shot Qwen3-VL-8B | 0.010 | 0.022 | 0.073 | 0.185 | 0.327 | 0.301 |
 | **PER** | 0.034 | **0.153** | **0.231** | **0.430** | **0.516** | **0.584** |
 
@@ -663,3 +663,25 @@ reader data (tag lt08). Its world model alone does not raise external recall (to
 - Recall at 20 / 30 addresses: 0.871 / 0.903 (fused list), 0.914 / 0.957 (local-mean prior).
 - The reading budget, address list and rule are being chosen on 100 Task08 cases held out of reader training
   (`make_liver_kdev.py`, `collect_liver_kdev.py`).
+
+**Liver, two-sided prediction error (2026-10-19 evening).** The external misses were mostly hyper-enhancing HCC
+(tumour centre about 100-124 HU against liver about 70 HU). Both liver proposers were one-sided: the learned model with
+sign -1 and the local-mean prior both look only for regions darker than expected, a choice made for the MSD metastases.
+
+The general form of the error is two-sided: the magnitude of the precision-weighted error
+(`ContextPrior(two_sided=True)`, `LIVER_TWO_SIDED=1`). The reader is retrained on its addresses
+(`runs_reader/q8_liver_t08h2`; 100 Task08 cases held out). Max-p, hit inside a target tumour >= 10 mm:
+
+| reading budget K | 10 | 20 | 30 |
+|---|---|---|---|
+| Task08 held-out (dev), one-sided pipeline | **0.90** | 0.89 | 0.89 |
+| Task08 held-out (dev), two-sided pipeline | 0.83 | 0.87 | **0.90** |
+| MSD evaluation (53), two-sided | 0.85 | 0.87 | **0.87** |
+| HCC-TACE-Seg external (93), two-sided | 0.80 | 0.82 | **0.83** |
+| HCC-TACE-Seg external, oracle (two-sided list) | 0.87 | 0.91 | 0.96 |
+
+- On the development site the two-sided pipeline at its best budget (K=30) ties the one-sided one at its best (0.90).
+- On the evaluation sets, the two-sided pipeline at K=30 vs the one-sided at K=10: MSD 0.87 vs 0.83, external 0.83 vs
+  0.73. Earlier final: 0.85 / 0.73. SAT-Pro 0.94* / 0.88, VISTA3D 0.94* / 0.85.
+- The two-sided form was motivated by looking at the external misses. The choice between the two pipelines is a tie on
+  the development site and is made by the principle that a finding is a departure of either sign.

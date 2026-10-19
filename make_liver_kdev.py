@@ -6,6 +6,9 @@ on Task08 is applied unchanged. Two-row strips (60 and 150 mm) as the final live
 
     python make_liver_kdev.py split                       # dev cases; reader training rows without them
     python make_liver_kdev.py strips t08|ext|msd <tag>    # data/liver_k30_<set>_<list>/eval.jsonl for each list
+    KDEV_ONLY=fused2,learned2 python make_liver_kdev.py strips ext lt08    # only these lists (two-sided error)
+The learned model's error is one-sided in the earlier lists (darker than expected, the MSD metastases); fused2 and
+learned2 use departures of either sign, since hyper-enhancing tumours are brighter than the liver predicts.
 """
 import json
 import os
@@ -18,6 +21,8 @@ from perr.context_wm import ContextPrior, fuse_rrf
 from perr.liver import CONTEXT_FOV, QUESTION_2SCALE, LiverPrior, liver_strips
 
 K = 30
+NAMES = ("fused", "prior", "learned", "fused2", "learned2")    # 2: the learned model's departures of either sign
+ONLY = [n for n in os.environ.get("KDEV_ONLY", "").split(",") if n]
 SETS = {"t08": "liver_t08", "ext": "liver_ext", "msd": "liver"}
 TAG = "lt08"
 
@@ -36,7 +41,9 @@ def module(which):
 def lists(s, which, cache):
     prior = (LiverPrior(cache=cache) if cache else LiverPrior()).top(s, 60)
     learned = ContextPrior(tag=TAG, sigma=3.0, organ=SETS[which]).top(s, 60, nms_mm=15.0)
-    return {"fused": fuse_rrf([prior, learned], s.spacing, c=10.0, nms_mm=15.0)[:K], "prior": prior[:K], "learned": learned[:K]}
+    both = ContextPrior(tag=TAG, sigma=3.0, organ=SETS[which], two_sided=True).top(s, 60, nms_mm=15.0)
+    return {"fused": fuse_rrf([prior, learned], s.spacing, c=10.0, nms_mm=15.0)[:K], "prior": prior[:K], "learned": learned[:K],
+            "fused2": fuse_rrf([prior, both], s.spacing, c=10.0, nms_mm=15.0)[:K], "learned2": both[:K]}
 
 
 def work(job):
@@ -45,6 +52,8 @@ def work(job):
     s = load(case)
     out = {}
     for name, pts in lists(s, which, cache).items():
+        if ONLY and name not in ONLY:
+            continue
         d = f"data/liver_k30_{which}_{name}"
         rows = []
         for r in liver_strips(s, pts, label_fn=label_at, context_fov=CONTEXT_FOV):
@@ -75,11 +84,12 @@ def main():
         return
     which, TAG = sys.argv[2], sys.argv[3]
     _, _, _, cases = module(which)
-    for name in ("fused", "prior", "learned"):
+    names = [n for n in NAMES if not (ONLY and n not in ONLY)]
+    for name in names:
         os.makedirs(f"data/liver_k30_{which}_{name}/img", exist_ok=True)
     with Pool(24) as p:
         res = p.map(work, [(which, c) for c in cases], chunksize=1)
-    for name in ("fused", "prior", "learned"):
+    for name in names:
         rows = [r for x in res for r in x[name]]
         with open(f"data/liver_k30_{which}_{name}/eval.jsonl", "w") as f:
             f.writelines(json.dumps(r) + "\n" for r in rows)

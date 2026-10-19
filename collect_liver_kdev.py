@@ -11,7 +11,7 @@ from collections import defaultdict
 
 import numpy as np
 
-KS, LISTS, RULES = (10, 20, 30), ("fused", "prior", "learned"), ("maxp", "wm_x_reader")
+KS, LISTS, RULES = (10, 20, 30), ("fused", "prior", "learned", "fused2", "learned2"), ("maxp", "wm_x_reader")
 
 
 def load(name, which, lst):

@@ -8,6 +8,9 @@ target tumour (centre jittered by up to 3 mm) and one per smaller tumour. Labels
     python make_liver_data.py
     python make_liver_data.py --proposal fused --out data/liver_reader_fused     # with the learned liver world model
 """
+# LIVER_TWO_SIDED=1: the learned model's departures of either sign (hyper- as well as hypo-attenuating findings)
+import os as _os
+TWO_SIDED = _os.environ.get("LIVER_TWO_SIDED") == "1"
 import argparse
 import json
 import os
@@ -27,7 +30,7 @@ CONTEXT = False
 def proposal_top(s, k=10):
     """liver: the local-mean world model; context: the learned one (sigma fixed on the liver dev split); fused: the two
     by reciprocal rank (c = 10, as for the lung; chosen over either alone on the training pool)."""
-    learned = lambda n: ContextPrior(tag=TAG, sigma=3.0, organ="liver").top(s, n, nms_mm=15.0)
+    learned = lambda n: ContextPrior(tag=TAG, sigma=3.0, organ="liver", two_sided=TWO_SIDED).top(s, n, nms_mm=15.0)
     if PROPOSAL == "context":
         return learned(k)
     if PROPOSAL == "fused":

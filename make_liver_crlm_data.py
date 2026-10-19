@@ -7,6 +7,9 @@ validation cases.
     e.g. python make_liver_crlm_data.py lcrlm data/liver_reader_fused_lcrlm data/liver_reader_all
 "holdout" moves 40 CRLM cases into validation (for choosing between reader inputs on more than 7 MSD cases).
 """
+# LIVER_TWO_SIDED=1: the learned model's departures of either sign (hyper- as well as hypo-attenuating findings)
+import os as _os
+TWO_SIDED = _os.environ.get("LIVER_TWO_SIDED") == "1"
 import json
 import os
 import sys
@@ -24,7 +27,7 @@ HOLDOUT = 40          # CRLM cases kept for validation (with the MSD validation 
 
 def work(case):
     s = load_case(case)
-    learned = ContextPrior(tag=TAG, sigma=3.0, organ="liver_crlm").top(s, 50, nms_mm=15.0)
+    learned = ContextPrior(tag=TAG, sigma=3.0, organ="liver_crlm", two_sided=TWO_SIDED).top(s, 50, nms_mm=15.0)
     top = fuse_rrf([LiverPrior(cache=CACHE).top(s, 50), learned], s.spacing, c=10.0, nms_mm=15.0)[:10]
     ctx = CONTEXT_FOV if CONTEXT else None
     rows = [dict(r, source="wm") for r in liver_strips(s, top, label_fn=label_at, context_fov=ctx)]

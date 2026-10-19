@@ -195,9 +195,12 @@ def error_map(R, S=None, sigma=2.0, signed=True, weight="none"):
     return W
 
 
-def peaks_from_error(R, dom, k=50, sigma=2.0, nms_mm=10.0, signed=True, S=None, weight="none"):
-    """Top-k peaks of the smoothed error inside the grown domain (1 mm grid)."""
+def peaks_from_error(R, dom, k=50, sigma=2.0, nms_mm=10.0, signed=True, S=None, weight="none", two_sided=False):
+    """Top-k peaks of the smoothed error inside the grown domain (1 mm grid); two_sided: departures of either sign
+    (the magnitude of the smoothed, precision-weighted error)."""
     W = error_map(R, S, sigma, signed, weight)
+    if two_sided:
+        W = np.abs(W)
     W[np.asarray(dom) == 0] = 0
     r = int(np.ceil(nms_mm))
     out = []
@@ -219,8 +222,10 @@ class ContextPrior:
 
     name = "context"
 
-    def __init__(self, tag: str = "nll", sigma: float = 2.0, signed: bool = True, weight: str = "pool", organ: str = "lung"):
+    def __init__(self, tag: str = "nll", sigma: float = 2.0, signed: bool = True, weight: str = "pool", organ: str = "lung",
+                 two_sided: bool = False):
         self.tag, self.sigma, self.signed, self.weight, self.organ = tag, sigma, signed, weight, organ
+        self.two_sided = two_sided
 
     def top(self, study, k: int = 10, nms_mm: float = 10.0):
         cfg = ORGANS[self.organ]
@@ -230,7 +235,8 @@ class ContextPrior:
         S = np.load(f"{cfg['iso']}/{study.case_id}.{self.tag}S.npy", mmap_mode="r") if self.weight != "none" else None
         _, D, meta = load_iso(study.case_id, self.organ)
         return [(*to_original(p[:3], meta), p[3]) for p in
-                peaks_from_error(R, D, k=k, sigma=self.sigma, nms_mm=nms_mm, signed=self.signed, S=S, weight=self.weight)]
+                peaks_from_error(R, D, k=k, sigma=self.sigma, nms_mm=nms_mm, signed=self.signed, S=S, weight=self.weight,
+                                 two_sided=self.two_sided)]
 
 
 def interleave(a, b, spacing, nms_mm: float = 10.0):

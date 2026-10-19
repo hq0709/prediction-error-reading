@@ -6,6 +6,9 @@ set; validation is unchanged.
     python make_liver_t08_data.py <tag> <merged MSD + CRLM dir> <out_dir> [context|plain]
     e.g. python make_liver_t08_data.py lt08 data/liver_reader_all3 data/liver_reader_all3_t08 context
 """
+# LIVER_TWO_SIDED=1: the learned model's departures of either sign (hyper- as well as hypo-attenuating findings)
+import os as _os
+TWO_SIDED = _os.environ.get("LIVER_TWO_SIDED") == "1"
 import json
 import os
 import shutil
@@ -23,7 +26,7 @@ TAG, OUT, CONTEXT = "lt08", "data/liver_reader_all3_t08", False
 
 def work(case):
     s = load_case(case)
-    learned = ContextPrior(tag=TAG, sigma=3.0, organ="liver_t08").top(s, 50, nms_mm=15.0)
+    learned = ContextPrior(tag=TAG, sigma=3.0, organ="liver_t08", two_sided=TWO_SIDED).top(s, 50, nms_mm=15.0)
     top = fuse_rrf([LiverPrior(cache=CACHE).top(s, 50), learned], s.spacing, c=10.0, nms_mm=15.0)[:10]
     ctx = CONTEXT_FOV if CONTEXT else None
     rows = [dict(r, source="wm") for r in liver_strips(s, top, label_fn=label_at, context_fov=ctx)]
