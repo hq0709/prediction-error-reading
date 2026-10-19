@@ -590,3 +590,76 @@ addresses, give the best AUROC on ChestX-Det focal findings (0.847 vs 0.823 for 
 detector on LROC, win by a wide margin with few boxes, and transfer to MIMIC-CXR better than every detector and than a
 DenseNet trained on 238k MIMIC report labels (Lung Lesion 0.725 vs 0.705, Fracture 0.758 vs 0.739; with that DenseNet
 0.754 and 0.792). Pointing on ChestX-Det is second to YOLO11m (0.650 vs 0.662).
+
+## Where is learned from normal scans; labels buy what (2026-10-19)
+
+Every comparison below uses the same training images or scans and the same budget for every method, and single runs.
+
+**CT world model without any lesion annotation** (`train_context_wm.py --no-exclusion`; `runs_wm/ctx_free`, tag nllfree).
+Cubes containing nodules are no longer excluded; everything else is unchanged.
+
+| Lung, fresh1 / fresh2 | nodules excluded (earlier) | no annotation |
+|---|---|---|
+| address recall@1 / 5 / 10 / 20 (both sets) | 0.69 / 0.91 / 0.95 / 0.97 | 0.71 / 0.90 / 0.95 / 0.97 |
+| world model top-1 | 0.68 / 0.69 | 0.75 / 0.67 |
+| reader retrained on its addresses (WM x reader, K=10) | 0.84 / 0.85 | 0.83 / 0.84 |
+
+**Lung label efficiency.**
+- PER's reader is trained on the nodule labels of b% of the training scans (`results/lung_train_uids_<b>.txt`) and reads
+  the addresses of the label-free world model.
+- Few-scan readers repeat their rows to full-epoch length (`--full-epochs`) and are validated after every pass.
+- MONAI 3-D RetinaNet (LUNA16 tutorial configuration at 1 mm) is trained on the boxes of the same scans, from scratch
+  or from MedicalNet ResNet-50. Its checkpoint and rule are chosen on validation.
+- Hit: within radius + 3 mm of a nodule >= 6 mm.
+
+| scans with labels | 0% | 5% | 10% | 25% | 50% | 100% |
+|---|---|---|---|---|---|---|
+| PER (WM x reader) | 0.75 / 0.67 | **0.69 / 0.76** | **0.75 / 0.74** | **0.74 / 0.81** | 0.76 / 0.83 | **0.83 / 0.84** |
+| 3-D RetinaNet, MedicalNet | – | 0.50 / 0.59 | 0.68 / 0.67 | 0.67 / 0.66 | running | 0.79 / 0.78 |
+| 3-D RetinaNet, from scratch | – | running | running | 0.74 / 0.73 | running | 0.80 / 0.77 |
+
+**The reader's input with the world model's expectation** (`make_reader_expect.py`). A second row renders the predicted
+(expected) planes under the observed ones. Cross-fitted on the training pool (`choose_rule_cv.py`, 162 scans), both
+inputs choose WM x reader, and the observed-only reader is better there (0.846 vs 0.821).
+- On the evaluation sets with WM x reader it ties at 100% (0.83 / 0.84) and does not help at 5-50%.
+- Not adopted.
+
+**Radiograph label efficiency** (`collect_cxr_curve.py`; ChestX-Det focal findings, test split). Positive rows of every
+method are repeated to their full-data share (`cxr_balance.py`), which is a no-op at 100%. The 1% subset has 7 boxed
+images and no Mass box. LROC:
+
+| boxes | 1% | 5% | 10% | 25% | 50% | 100% |
+|---|---|---|---|---|---|---|
+| Faster R-CNN | 0.046 | 0.079 | 0.186 | 0.311 | 0.438 | 0.546 |
+| RetinaNet | 0.019 | 0.053 | 0.179 | 0.207 | 0.323 | 0.505 |
+| FCOS | 0.010 | 0.127 | 0.156 | 0.232 | 0.290 | 0.383 |
+| YOLO11m | 0.016 | 0.047 | 0.065 | 0.240 | 0.414 | 0.584 |
+| RT-DETRv2-R50 | 0.000 | 0.127 | 0.168 | 0.301 | 0.431 | 0.558 |
+| Deformable DETR | 0.014 | 0.031 | 0.152 | 0.291 | running | 0.503 |
+| one-shot Qwen3-VL-8B | 0.010 | 0.022 | 0.073 | 0.185 | 0.327 | 0.301 |
+| **PER** | 0.034 | **0.153** | **0.231** | **0.430** | **0.516** | **0.584** |
+
+AUROC, PER: 0.518 / 0.560 / 0.668 / 0.787 / 0.821 / 0.847. That is the highest at every budget from 5%; at 1%,
+Faster R-CNN 0.495 and YOLO11m 0.517.
+
+**A new site needs only its normal radiographs.** `build_nih_normals.py` gives 49,324 NIH "No Finding" radiographs,
+with every patient with an NIH box or a ChestX-Det image removed (ChestX-Det images matched to NIH by content,
+`match_cxdet_nih.py`). The 512 world model is trained on them; the reader is unchanged. LROC on ChestX-Det / NIH, and
+MIMIC report-label AUROC (Lung Lesion / Fracture) for the reader alone:
+
+| world model trained on | ChestX-Det | NIH | MIMIC |
+|---|---|---|---|
+| MIMIC "No Finding" | 0.533 | 0.438 | 0.684 / **0.772** |
+| NIH "No Finding" | 0.521 | 0.439 | **0.719** / 0.724 |
+| MIMIC, every image, labels ignored | 0.488 | 0.401 | 0.698 / 0.711 |
+
+Adding the NIH-normal world model's 30 addresses to the final method (same final reader, no label) gives:
+- ChestX-Det: 0.584 → **0.601** LROC (hit 0.650 → 0.669).
+- NIH: 0.438 → **0.464** LROC (hit 0.512 → 0.536).
+
+**Liver.** MSD Task08 (303 cases, livers by TotalSegmentator, `perr/liver_t08.py`) is added to the world model and
+reader data (tag lt08). Its world model alone does not raise external recall (top-10 0.817 vs 0.828).
+- The external misses are mid-sized tumours (21-50 mm, median 35 mm).
+- Recall at 20 / 30 addresses: 0.871 / 0.903 (fused list), 0.914 / 0.957 (local-mean prior).
+- The reading budget, address list and rule are being chosen on 100 Task08 cases held out of reader training
+  (`make_liver_kdev.py`, `collect_liver_kdev.py`).

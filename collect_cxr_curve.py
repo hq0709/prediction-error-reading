@@ -34,7 +34,7 @@ def main():
     out = []
     for label, run, fn, k in METHODS:
         for bud in BUDGETS:
-            path = f"{R}/{run}{'' if bud == 100 else f'_b{bud}'}/{fn}"
+            path = f"{R}/{run}{'' if bud == 100 else f'_b{bud}bal'}/{fn}"       # class-balanced epochs (cxr_balance.py)
             if not os.path.exists(path):
                 continue
             rows = [json.loads(l) for l in open(path)]

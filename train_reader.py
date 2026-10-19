@@ -68,7 +68,8 @@ def main():
     ap.add_argument("--wm-only", action="store_true", help="train on world-model candidates only (no gt strips)")
     ap.add_argument("--train-uids", default=None, help="only these training scans (label-efficiency settings)")
     ap.add_argument("--full-epochs", action="store_true", help="with --train-uids: every epoch as long as with all "
-                    "training scans (the allowed scans' rows repeated, a fresh draw of negatives each time)")
+                    "training scans (the allowed scans' rows repeated, a fresh draw of negatives each time; validated "
+                    "after every pass, so the checkpoint can stop as early as one pass)")
     ap.add_argument("--device-map", default="single", help='"single" (one GPU) or "auto" (split a large model)')
     a = ap.parse_args()
     global VARIANT
@@ -143,6 +144,14 @@ def main():
             tot += loss.item()
             if st % 50 == 0:
                 print(f"epoch {ep} step {st}/{steps} loss {tot / (st + 1):.4f}", flush=True)
+            per_pass = math.ceil(steps / reps)
+            if reps > 1 and (st + 1) % per_pass == 0 and st + 1 < steps:   # repeated small sets: validate every pass
+                at = ep - 1 + (st + 1) / steps
+                auc = validate(round(at, 3), {"train_loss": tot / (st + 1)})
+                if auc > best:
+                    best = auc
+                    model.save_pretrained(f"{a.out}/lora_best")
+                    json.dump({"epoch": round(at, 3), "val_auroc": auc}, open(f"{a.out}/best.json", "w"))
         auc = validate(ep, {"train_loss": tot / steps})
         if auc > best:
             best = auc
