@@ -19,6 +19,7 @@ every address of the evaluation sets (data/cxr_focal/<proposer>/<set>.jsonl) int
         --mimic-rows results/cxr_focal/cxr_focal/wm_mimic_train.jsonl
 """
 import argparse
+import gc
 import json
 import math
 import os
@@ -155,6 +156,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--epochs", type=int, default=2)
     ap.add_argument("--bs", type=int, default=16)
+    ap.add_argument("--micro", type=int, default=0, help="micro-batch size (gradient accumulation to --bs); 0: --bs")
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--rank", type=int, default=16)
     ap.add_argument("--neg", type=int, default=10)
@@ -170,6 +172,8 @@ def main():
     ap.add_argument("--hard-from", default=None, help="a reader's scored ChestX-Det training addresses (hard negatives)")
     ap.add_argument("--hard", type=int, default=0, help="per image and epoch, this many of the --neg negatives are the "
                                                          "addresses that reader scored highest")
+    ap.add_argument("--pos-share", type=float, default=0.0, help="class-balanced epochs: positive rows are repeated until "
+                    "they make up at least this share of each epoch (0.16 = their share with every box; a no-op there)")
     a = ap.parse_args()
     random.seed(0); torch.manual_seed(0)
     name = os.path.basename(a.out.rstrip("/"))
@@ -204,8 +208,11 @@ def main():
             v = sorted(v, key=lambda r: -prev.get((r["key"], r["i"]), 0.0))
             hard_by[k], neg_by[k] = v[:a.hard], v[a.hard:]
     mil = mimic_rows(a.mimic_rows, a.mil_silence, a.mil_gate) if a.mimic_rows else []
-    per_epoch = len(pos_tr) + sum(min(a.neg, len(v) + len(hard_by.get(k, []))) for k, v in neg_by.items()) + len(mil)
-    print(f"train images {len(keys) - len(val_keys)}, positive rows {len(pos_tr)}, MIMIC report-label rows {len(mil)} "
+    n_neg = sum(min(a.neg, len(v) + len(hard_by.get(k, []))) for k, v in neg_by.items()) + len(mil)
+    n_pos = max(len(pos_tr), math.ceil(a.pos_share * n_neg / (1 - a.pos_share))) if pos_tr else 0
+    per_epoch = n_pos + n_neg
+    print(f"train images {len(keys) - len(val_keys)}, positive rows {len(pos_tr)} ({n_pos} per epoch), "
+          f"MIMIC report-label rows {len(mil)} "
           f"({sum(1 for r in mil if any(y and m for y, m in zip(r['y'], r['m'])))} positive), ~{per_epoch} rows per epoch; "
           f"validation {len(val_keys)} images, {len(va)} addresses", flush=True)
 
@@ -225,24 +232,30 @@ def main():
 
     best, g, log = -1.0, 0, []
     for ep in range(a.epochs):
-        epoch = pos_tr + mil + [r for k, v in neg_by.items()
+        reps = [pos_tr[i % len(pos_tr)] for i in random.sample(range(max(n_pos, len(pos_tr))), n_pos)] if pos_tr else []
+        epoch = reps + mil + [r for k, v in neg_by.items()
                                 for r in hard_by.get(k, []) + random.sample(v, max(0, min(a.neg - len(hard_by.get(k, [])), len(v))))]
         random.shuffle(epoch)
         tot = 0.0
         for st in range(0, len(epoch), a.bs):
             chunk = epoch[st:st + a.bs]
-            ans = [r["y"] for r in chunk]
-            enc, pos = codec.batch(chunk, ans)
-            enc = enc.to(model.device)
-            lg = model(**enc).logits[torch.arange(len(chunk))[:, None], pos.to(model.device) - 1].float()
-            tgt = torch.tensor(ans, device=model.device)
-            msk = torch.tensor([r["m"] for r in chunk], device=model.device, dtype=torch.float32).view(-1)
-            two = torch.stack([lg[..., codec.no], lg[..., codec.yes]], -1)
-            ce = torch.nn.functional.cross_entropy(two.view(-1, 2), tgt.view(-1), reduction="none")
-            loss = (ce * msk).sum() / msk.sum()
+            n_ans = float(sum(sum(r["m"]) for r in chunk))
+            loss = 0.0
+            for ms in range(0, len(chunk), a.micro or a.bs):        # micro-batches: the same loss and step, less memory
+                sub = chunk[ms:ms + (a.micro or a.bs)]
+                ans = [r["y"] for r in sub]
+                enc, pos = codec.batch(sub, ans)
+                enc = enc.to(model.device)
+                lg = model(**enc).logits[torch.arange(len(sub))[:, None], pos.to(model.device) - 1].float()
+                tgt = torch.tensor(ans, device=model.device)
+                msk = torch.tensor([r["m"] for r in sub], device=model.device, dtype=torch.float32).view(-1)
+                two = torch.stack([lg[..., codec.no], lg[..., codec.yes]], -1)
+                ce = torch.nn.functional.cross_entropy(two.view(-1, 2), tgt.view(-1), reduction="none")
+                part = (ce * msk).sum() / n_ans
+                part.backward()
+                loss += part.detach()
             for grp in opt.param_groups:
                 grp["lr"] = sched(g)
-            loss.backward()
             torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad], 1.0)
             opt.step(); opt.zero_grad()
             tot += loss.item(); g += 1
@@ -257,7 +270,8 @@ def main():
             model.save_pretrained(f"{a.out}/lora_best")
             json.dump({"epoch": ep, "val_mean_auroc": v}, open(f"{a.out}/best.json", "w"))
     json.dump(log, open(f"{a.out}/log.json", "w"), indent=1)
-    del model
+    del model, base, opt          # the trained copy is dropped before the best adapter is loaded onto a fresh base
+    gc.collect()
     torch.cuda.empty_cache()
     base = AutoModelForImageTextToText.from_pretrained(Q8, dtype=torch.bfloat16, device_map={"": 0})
     model = PeftModel.from_pretrained(base, f"{a.out}/lora_best").eval()

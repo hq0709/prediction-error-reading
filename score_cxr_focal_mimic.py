@@ -87,7 +87,9 @@ def run_sets(run):
             out.append((f"{run} (both world models)", union(va, ha), union(te, ht), (30, 60)))
     if have("wmu_"):                                               # union rows scored directly (make_wmu_mimic.py)
         out.append((f"{run} (both world models)", read(f("wmu_", "validate")), read(f("wmu_", "test")), (30, 60)))
-    for pre, label in (("random_", "random thorax points"), ("wmr_", "512 world model, whole radiograph")):
+    for pre, label in (("random_", "random thorax points"), ("wmr_", "512 world model, whole radiograph"),
+                       ("wmn_", "512 world model trained on NIH normals"),
+                       ("wma_", "512 world model trained on MIMIC images of any label")):
         if have(pre):                                              # ablations: other address sources, same reader
             out.append((f"{run} ({label})", read(f(pre, "validate")), read(f(pre, "test")), (10, 20, 30)))
     return out

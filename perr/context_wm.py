@@ -34,6 +34,9 @@ ORGANS = {"lung": {"src": LUNA_CACHE, "dom": "domain", "iso": ISO, "window": (-1
           # extra liver training data (TCIA CRLM), cached next to the MSD cases so one model trains on both
           "liver_crlm": {"src": "/raid/home/CAMCA/hj880/perr/cache/liver_crlm", "dom": "liver",
                          "iso": "/raid/home/CAMCA/hj880/perr/cache/iso_liver", "window": (-200.0, 300.0), "sign": -1.0},
+          # extra liver training data (MSD Task08 Hepatic Vessel, liver from TotalSegmentator), cached likewise
+          "liver_t08": {"src": "/raid/home/CAMCA/hj880/perr/cache/liver_t08", "dom": "liver",
+                        "iso": "/raid/home/CAMCA/hj880/perr/cache/iso_liver", "window": (-200.0, 300.0), "sign": -1.0},
           # external liver test set (HCC-TACE-Seg): read with the liver model, never trained on
           "liver_ext": {"src": "/raid/home/CAMCA/hj880/perr/cache/liver_ext", "dom": "liver",
                         "iso": "/raid/home/CAMCA/hj880/perr/cache/iso_liver_ext", "window": (-200.0, 300.0), "sign": -1.0}}
@@ -91,6 +94,26 @@ def build_iso(uid: str, organ: str = "lung") -> None:
     pick = lambda a, n: a[rng.choice(len(a), size=min(n, len(a)), replace=False)] if len(a) else a
     np.save(stem + ".centres.npy", np.concatenate([pick(allc, 20000), pick(tis, 20000)]).astype(np.int16))
     np.save(stem + ".meta.npy", {"lo_mm": lo, "spacing": sp, "shape": shape, "n_all": len(allc), "n_tissue": len(tis)})
+
+
+def all_centres(uid: str, organ: str = "lung"):
+    """Training centres without the lesion exclusion, for a world model trained without any lesion annotation:
+    the same draw as build_iso (inside the grown domain, the context inside the volume, half of them on tissue) with
+    annotated lesions left in. Cached as <uid>.centres_all.npy."""
+    stem = f"{ORGANS[organ]['iso']}/{uid}"
+    if not os.path.exists(stem + ".centres_all.npy"):
+        V = np.load(stem + ".vol.npy", mmap_mode="r")
+        Dg = np.load(stem + ".dom.npy") > 0
+        h, shape = CTX // 2, Dg.shape
+        inner = np.zeros(shape, bool)
+        inner[h:shape[0] - h, h:shape[1] - h, h:shape[2] - h] = True
+        ok = Dg & inner
+        rng = np.random.default_rng(zlib.crc32(uid.encode()))
+        allc = np.argwhere(ok)
+        tis = np.argwhere(ok & (np.asarray(V) > (-500 if organ == "lung" else 0)))
+        pick = lambda a, n: a[rng.choice(len(a), size=min(n, len(a)), replace=False)] if len(a) else a  # noqa: E731
+        np.save(stem + ".centres_all.npy", np.concatenate([pick(allc, 20000), pick(tis, 20000)]).astype(np.int16))
+    return np.load(stem + ".centres_all.npy")
 
 
 def load_iso(uid: str, organ: str = "lung"):

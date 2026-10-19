@@ -15,6 +15,8 @@ Calcification, Fracture.
     python cxr_focal_data.py cxdet --proposer grid    # every place (25 px lattice over the thorax): reading without a proposer
     python cxr_focal_data.py cxdet --proposer wmh|wmu # the 1024-grid world model / both world models in turn
     python cxr_focal_data.py cxdet --proposer wmr     # ablation: the world model's addresses over the whole radiograph
+    python cxr_focal_data.py cxdet --proposer wmn --split test   # the 512 world model trained on NIH normals (another site)
+    python cxr_focal_data.py cxdet --proposer wma --split test   # the 512 world model trained on MIMIC images of any label
 
 Writes data/cxr_focal/<proposer>/<set>.jsonl (one row per address) and the views under data/cxr_focal/views/.
 """
@@ -44,8 +46,8 @@ PROPOSER = "wm"
 def addresses(key):
     img = np.load(f"{CACHE}/{key}.npy")
     D = search_domain(key, valid_region(img)) if PROPOSER != "wmr" else valid_region(img)
-    if PROPOSER in ("wm", "wmh", "wmr"):                                 # wmh: the 1024-grid world model (train_cxr_wm.py --canvas 1024)
-        t = "cxrh" if PROPOSER == "wmh" else "cxr"
+    if PROPOSER in ("wm", "wmh", "wmr", "wmn", "wma"):                   # wmh: the 1024-grid world model (train_cxr_wm.py --canvas 1024)
+        t = {"wmh": "cxrh", "wmn": "cxrn", "wma": "cxra"}.get(PROPOSER, "cxr")  # wmn: trained on NIH normals; wma: on any MIMIC image
         R = np.load(f"{ROOT}/cache/cxr_wm/{key}.{t}R.npy").astype(np.float32)
         S = np.load(f"{ROOT}/cache/cxr_wm/{key}.{t}S.npy").astype(np.float32)
         W = error_map(R, S, 2.0, 1)
@@ -143,7 +145,7 @@ def main():
     global PROPOSER
     ap = argparse.ArgumentParser()
     ap.add_argument("which", choices=["cxdet", "nih", "mimic", "mimic_train"])
-    ap.add_argument("--proposer", choices=["wm", "wmh", "wmu", "wmr", "patchcore", "random", "grid"], default="wm")
+    ap.add_argument("--proposer", choices=["wm", "wmh", "wmu", "wmr", "wmn", "wma", "patchcore", "random", "grid"], default="wm")
     ap.add_argument("--split", default=None, help="only this split (e.g. test)")
     a = ap.parse_args()
     PROPOSER = a.proposer

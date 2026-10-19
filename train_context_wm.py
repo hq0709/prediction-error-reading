@@ -4,6 +4,12 @@ World-model dev split: 60 pool scans with a nodule >= 6 mm (liver: 15 pool cases
 out of training; their recall decides how the world model is used. No evaluation scan is read. Validation loss is the hidden-part MSE on dev-scan cubes (also for --nll).
 
     CUDA_VISIBLE_DEVICES=7 python train_context_wm.py --steps 40000 --out runs_wm/ctx
+
+With --no-exclusion the cubes are drawn with annotated lesions left in (perr/context_wm.all_centres): the world model
+is trained without any lesion annotation. --stop-at ends training early under the same --steps schedule (the lung model
+in use is the best checkpoint of the first 10k of 40k steps).
+
+    CUDA_VISIBLE_DEVICES=7 python train_context_wm.py --steps 40000 --stop-at 10000 --nll --no-exclusion --out runs_wm/ctx_free
 """
 import argparse
 import json
@@ -15,7 +21,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, IterableDataset
 
-from perr.context_wm import CTX, ORGANS, hole_mask, make_unet, norm
+from perr.context_wm import CTX, ORGANS, all_centres, hole_mask, make_unet, norm
 
 
 def dev_split(organ="lung"):
@@ -35,8 +41,8 @@ def dev_split(organ="lung"):
 class Cubes(IterableDataset):
     """64 mm cubes centred on the cached training centres (half anywhere in the grown domain, half on tissue)."""
 
-    def __init__(self, uids, seed, flip=True, organ="lung"):
-        self.uids, self.seed, self.flip, self.organ = uids, seed, flip, organ
+    def __init__(self, uids, seed, flip=True, organ="lung", centres="centres"):
+        self.uids, self.seed, self.flip, self.organ, self.centres = uids, seed, flip, organ, centres
 
     def __iter__(self):
         wi = torch.utils.data.get_worker_info()
@@ -48,7 +54,7 @@ class Cubes(IterableDataset):
                 if len(cache) >= 48:
                     cache.pop(next(iter(cache)))
                 iso = ORGANS[self.organ]["iso"]
-                cache[u] = (np.load(f"{iso}/{u}.vol.npy", mmap_mode="r"), np.load(f"{iso}/{u}.centres.npy"))
+                cache[u] = (np.load(f"{iso}/{u}.vol.npy", mmap_mode="r"), np.load(f"{iso}/{u}.{self.centres}.npy"))
             V, C = cache[u]
             z, y, x = (int(v) for v in C[rng.integers(len(C))])
             cube = norm(V[z - h:z + h, y - h:y + h, x - h:x + h], self.organ)
@@ -66,14 +72,23 @@ def main():
     ap.add_argument("--nll", action="store_true", help="also predict a log-variance; beta-NLL loss (beta 0.5)")
     ap.add_argument("--organ", choices=sorted(ORGANS), default="lung")
     ap.add_argument("--extra-cases", help="file of further training cases cached in the same 1 mm folder (e.g. CRLM)")
+    ap.add_argument("--no-exclusion", action="store_true", help="annotated lesions left in the training cubes")
+    ap.add_argument("--stop-at", type=int, default=None, help="stop after this many steps of the --steps schedule")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     train, dev = dev_split(a.organ)
     if a.extra_cases:
         train += open(a.extra_cases).read().split()
     json.dump({"train": train, "dev": dev}, open(f"{a.out}/split.json", "w"))
-    dl = DataLoader(Cubes(train, 0, organ=a.organ), batch_size=a.bs, num_workers=12, pin_memory=True, persistent_workers=True)
-    val = torch.stack([c for c, _ in zip(Cubes(dev, 12345, flip=False, organ=a.organ), range(512))])
+    centres = "centres"
+    if a.no_exclusion:
+        from multiprocessing import Pool
+        with Pool(24) as p:
+            p.starmap(all_centres, [(u, a.organ) for u in train + dev], chunksize=1)
+        centres = "centres_all"
+    dl = DataLoader(Cubes(train, 0, organ=a.organ, centres=centres), batch_size=a.bs, num_workers=12, pin_memory=True,
+                    persistent_workers=True)
+    val = torch.stack([c for c, _ in zip(Cubes(dev, 12345, flip=False, organ=a.organ, centres=centres), range(512))])
     model = make_unet(out_ch=2 if a.nll else 1).cuda()
     print("params", sum(p.numel() for p in model.parameters()) / 1e6, "M", flush=True)
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=1e-4)
@@ -111,14 +126,14 @@ def main():
         opt.step()
         sched.step()
         run.append(loss.item())
-        if (step + 1) % 2000 == 0 or step + 1 == a.steps:
+        if (step + 1) % 2000 == 0 or step + 1 == (a.stop_at or a.steps):
             v = validate()
             print(f"step {step + 1} train {np.mean(run):.5f} val {v:.5f} ({time.time() - t0:.0f}s)", flush=True)
             run = []
             if v < best:
                 best = v
                 torch.save(model.state_dict(), f"{a.out}/model.pt")
-        if step + 1 == a.steps:
+        if step + 1 == (a.stop_at or a.steps):
             break
     print(f"best val {best:.5f}", flush=True)
 

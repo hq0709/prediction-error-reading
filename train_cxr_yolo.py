@@ -22,6 +22,7 @@ from PIL import Image
 ROOT = "/raid/home/CAMCA/hj880/perr"
 os.environ.setdefault("YOLO_CONFIG_DIR", f"{ROOT}/runs_reader/ultralytics/config")
 
+from cxr_balance import balanced  # noqa: E402
 from cxr_recall import boxes  # noqa: E402
 from perr.cxr import CACHE  # noqa: E402
 from train_cxr_detector import TYPES, auroc  # noqa: E402
@@ -30,8 +31,9 @@ PNG = f"{ROOT}/data/cxr_yolo/png"
 DEVICE = os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(",")[0]   # ultralytics resets CUDA_VISIBLE_DEVICES to its device
 
 
-def prepare(name, train_keys):
-    """YOLO-format copy of the split: PNGs shared across runs (symlinked), one label file per image."""
+def prepare(name, train_keys, balance=False):
+    """YOLO-format copy of the split: PNGs shared across runs (symlinked), one label file per image (a training image
+    repeated by class balancing gets one symlink and label file per repeat)."""
     g = pd.read_csv(f"{ROOT}/results/cxr_cxdet.csv")
     b = boxes("cxdet")
     b = b[b.finding.isin(TYPES)]
@@ -43,17 +45,23 @@ def prepare(name, train_keys):
     if train_keys:
         allowed = set(open(train_keys).read().split())
         tr_keys = [k for k in tr_keys if k in allowed]
+    if balance:
+        tr_keys = balanced(tr_keys, lambda k: k in by)
     test_keys = sorted(g[g.split == "test"].key)
     root = f"{ROOT}/data/cxr_yolo/{name}"
     os.makedirs(PNG, exist_ok=True)
     for split, keys in (("train", tr_keys), ("val", val_keys), ("test", test_keys)):
         os.makedirs(f"{root}/images/{split}", exist_ok=True)
         os.makedirs(f"{root}/labels/{split}", exist_ok=True)
+        seen = {}
         for k in keys:
             stem = k.replace("/", "_")
             src = f"{PNG}/{stem}.png"
             if not os.path.exists(src):
                 Image.fromarray(np.load(f"{CACHE}/{k}.npy")).save(src)
+            seen[k] = seen.get(k, -1) + 1
+            if seen[k]:
+                stem = f"{stem}_r{seen[k]}"
             dst = f"{root}/images/{split}/{stem}.png"
             if not os.path.lexists(dst):
                 os.symlink(src, dst)
@@ -106,12 +114,13 @@ def main():
     ap.add_argument("--lr0", type=float, default=0.01)
     ap.add_argument("--weight-decay", type=float, default=0.0005)
     ap.add_argument("--train-keys", default=None, help="only these training images (few-box settings)")
+    ap.add_argument("--balance", action="store_true", help="class-balanced epochs (cxr_balance.py)")
     ap.add_argument("--score-sets", action="store_true", help="only score ChestX-Det test, MIMIC validate/test and NIH with the trained model")
     ap.add_argument("--resume", action="store_true", help="finish an interrupted training from its last checkpoint")
     a = ap.parse_args()
     name = os.path.basename(a.out.rstrip("/"))
     out = os.path.abspath(a.out)
-    root, val_keys, test_keys, by = prepare(name, a.train_keys)
+    root, val_keys, test_keys, by = prepare(name, a.train_keys, a.balance)
     work = f"{ROOT}/runs_reader/ultralytics"
     os.makedirs(work, exist_ok=True)
     os.chdir(work)   # ultralytics drops downloaded weights (and its AMP check model) into the working directory

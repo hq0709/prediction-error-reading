@@ -19,6 +19,7 @@ import pandas as pd
 import torch
 from transformers import AutoImageProcessor, AutoModelForObjectDetection
 
+from cxr_balance import balanced
 from cxr_recall import boxes
 from perr.cxr import CACHE
 from train_cxr_detector import TYPES, auroc
@@ -78,6 +79,7 @@ def main():
     ap.add_argument("--bs", type=int, default=8)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--train-keys", default=None, help="only these training images (few-box settings)")
+    ap.add_argument("--balance", action="store_true", help="class-balanced epochs (cxr_balance.py)")
     a = ap.parse_args()
     random.seed(0); torch.manual_seed(0)
     os.makedirs(a.out, exist_ok=True)
@@ -93,6 +95,8 @@ def main():
     if a.train_keys:
         allowed = set(open(a.train_keys).read().split())
         tr_keys = [k for k in tr_keys if k in allowed]
+    if a.balance:
+        tr_keys = balanced(tr_keys, lambda k: k in by)
     test_keys = sorted(g[g.split == "test"].key)
 
     proc = AutoImageProcessor.from_pretrained(a.model, size={"height": 512, "width": 512})

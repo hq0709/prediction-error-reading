@@ -66,6 +66,9 @@ def main():
     ap.add_argument("--max-steps", type=int, default=0, help="smoke test: stop each epoch after this many steps")
     ap.add_argument("--variant", choices=list(VARIANTS), default="full", help="what the reader is shown")
     ap.add_argument("--wm-only", action="store_true", help="train on world-model candidates only (no gt strips)")
+    ap.add_argument("--train-uids", default=None, help="only these training scans (label-efficiency settings)")
+    ap.add_argument("--full-epochs", action="store_true", help="with --train-uids: every epoch as long as with all "
+                    "training scans (the allowed scans' rows repeated, a fresh draw of negatives each time)")
     ap.add_argument("--device-map", default="single", help='"single" (one GPU) or "auto" (split a large model)')
     a = ap.parse_args()
     global VARIANT
@@ -87,6 +90,12 @@ def main():
     tr = [json.loads(l) for l in open(f"{a.data}/train.jsonl")]
     if a.wm_only:
         tr = [r for r in tr if r["source"] == "wm"]
+    full_rows = sum(r["label"] == 1 for r in tr)
+    full_rows += min(len(tr) - full_rows, int(full_rows * a.neg_ratio))
+    if a.train_uids:
+        keep = set(open(a.train_uids).read().split())
+        tr = [r for r in tr if r["uid"] in keep]
+        print(f"{len(keep)} training scans allowed, {len({r['uid'] for r in tr})} present", flush=True)
     va = [json.loads(l) for l in open(f"{a.data}/val.jsonl")]
     yes_id = proc.tokenizer.encode("yes", add_special_tokens=False)[0]
     no_id = proc.tokenizer.encode("no", add_special_tokens=False)[0]
@@ -107,14 +116,15 @@ def main():
 
     validate(0)
     n_neg = min(len(neg), int(len(pos) * a.neg_ratio))
-    steps = math.ceil((len(pos) + n_neg) / a.bs)
+    reps = max(1, round(full_rows / (len(pos) + n_neg))) if a.full_epochs and a.train_uids else 1
+    steps = math.ceil(reps * (len(pos) + n_neg) / a.bs)
     if a.max_steps:
         steps = min(steps, a.max_steps)
     total = steps * a.epochs        # one warm-up and one cosine decay over the whole run
     sched_lr = lambda g: a.lr * min(1.0, (g + 1) / 20) * (0.5 * (1 + math.cos(math.pi * g / total)))
-    print(f"{len(pos)} positives, {n_neg} of {len(neg)} negatives per epoch; {steps} steps per epoch", flush=True)
+    print(f"{len(pos)} positives, {n_neg} of {len(neg)} negatives, x{reps} per epoch; {steps} steps per epoch", flush=True)
     for ep in range(1, a.epochs + 1):
-        batch_rows = pos + random.sample(neg, n_neg)
+        batch_rows = [r for _ in range(reps) for r in pos + random.sample(neg, n_neg)]
         random.shuffle(batch_rows)
         tot = 0.0
         for st in range(steps):

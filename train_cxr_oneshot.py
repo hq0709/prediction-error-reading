@@ -9,6 +9,7 @@ P(yes) for that finding), so score_cxr_focal.py scores both alike.
     CUDA_VISIBLE_DEVICES=1 python train_cxr_oneshot.py --out runs_reader/cxr_oneshot
 """
 import argparse
+import gc
 import json
 import math
 import os
@@ -22,6 +23,7 @@ from peft import LoraConfig, PeftModel, get_peft_model
 from PIL import Image
 from transformers import AutoModelForImageTextToText, AutoProcessor
 
+from cxr_balance import balanced
 from cxr_recall import boxes
 from perr.cxr import CACHE
 from train_cxr_focal_reader import Q8, SHORT, TYPES, auroc
@@ -165,9 +167,11 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--epochs", type=int, default=3)
     ap.add_argument("--bs", type=int, default=8)
+    ap.add_argument("--micro", type=int, default=0, help="micro-batch size (gradient accumulation to --bs); 0: --bs")
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--rank", type=int, default=16)
     ap.add_argument("--train-keys", default=None, help="only these training images (few-box settings)")
+    ap.add_argument("--balance", action="store_true", help="class-balanced epochs (cxr_balance.py)")
     ap.add_argument("--score-sets", action="store_true", help="MIMIC validate/test and NIH with the trained adapter")
     a = ap.parse_args()
     random.seed(0); torch.manual_seed(0)
@@ -188,6 +192,8 @@ def main():
     test_keys = sorted(g[g.split == "test"].key)
     tg = targets_of(b, tr_keys + val_keys + test_keys)
     lab = {k: [int(t in tg[k]) for t in TYPES] for k in tg}
+    if a.balance:
+        tr_keys = balanced(tr_keys, lambda k: any(lab[k]))
     print(f"train {len(tr_keys)}, validation {len(val_keys)}, test {len(test_keys)} images", flush=True)
 
     proc = AutoProcessor.from_pretrained(Q8)
@@ -220,26 +226,37 @@ def main():
         random.shuffle(batches)
         tot = 0.0
         for kind, ch in batches:
+            mb = a.micro or a.bs                    # micro-batches: the same loss and step as the whole batch, less memory
+            subs = [ch[i:i + mb] for i in range(0, len(ch), mb)]
             if kind == "ask":
-                ans = [lab[k] for k in ch]
-                enc, pos = codec.ask(ch, ans)
-                lg, n, _ = forward(model, enc)
-                pos = torch.tensor([[n + p for p in q] for q in pos], device=lg.device)
-                lg = lg[torch.arange(len(ch))[:, None], pos - 1].float()
-                two = torch.stack([lg[..., codec.no], lg[..., codec.yes]], -1)
-                loss = torch.nn.functional.cross_entropy(two.view(-1, 2), torch.tensor(ans, device=lg.device).view(-1))
+                n_tot = float(len(ch) * len(TYPES))
             else:
-                enc = codec.point([k for k, _ in ch], [t for _, t in ch], [tg[k][t] for k, t in ch])
-                ids = enc["input_ids"].clone()
-                lg, n, tm = forward(model, enc)
-                tgt = ids[:, n:].to(lg.device)
-                pred = lg[:, n - 1:-1].float()
-                ce = torch.nn.functional.cross_entropy(pred.reshape(-1, pred.shape[-1]), tgt.reshape(-1), reduction="none")
-                m = tm.to(lg.device).float().view(-1)
-                loss = (ce * m).sum() / m.sum()
+                encs = [codec.point([k for k, _ in sb], [t for _, t in sb], [tg[k][t] for k, t in sb]) for sb in subs]
+                n_tot = float(sum(int(e["target_mask"].sum()) for e in encs))     # answer tokens of the whole batch
+            loss = 0.0
+            for si, sb in enumerate(subs):
+                if kind == "ask":
+                    ans = [lab[k] for k in sb]
+                    enc, pos = codec.ask(sb, ans)
+                    lg, n, _ = forward(model, enc)
+                    pos = torch.tensor([[n + p for p in q] for q in pos], device=lg.device)
+                    lg = lg[torch.arange(len(sb))[:, None], pos - 1].float()
+                    two = torch.stack([lg[..., codec.no], lg[..., codec.yes]], -1)
+                    part = torch.nn.functional.cross_entropy(two.view(-1, 2), torch.tensor(ans, device=lg.device).view(-1),
+                                                             reduction="sum") / n_tot
+                else:
+                    enc = encs[si]
+                    ids = enc["input_ids"].clone()
+                    lg, n, tm = forward(model, enc)
+                    tgt = ids[:, n:].to(lg.device)
+                    pred = lg[:, n - 1:-1].float()
+                    ce = torch.nn.functional.cross_entropy(pred.reshape(-1, pred.shape[-1]), tgt.reshape(-1), reduction="none")
+                    m = tm.to(lg.device).float().view(-1)
+                    part = (ce * m).sum() / n_tot
+                part.backward()
+                loss += part.detach()
             for grp in opt.param_groups:
                 grp["lr"] = sched(step)
-            loss.backward()
             torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad], 1.0)
             opt.step(); opt.zero_grad()
             tot += loss.item(); step += 1
@@ -251,7 +268,8 @@ def main():
         if v > best:
             best = v
             model.save_pretrained(f"{a.out}/lora_best")
-    del model
+    del model, base, opt          # the trained copy is dropped before the best adapter is loaded onto a fresh base
+    gc.collect()
     torch.cuda.empty_cache()
     base = AutoModelForImageTextToText.from_pretrained(Q8, dtype=torch.bfloat16, device_map={"": 0})
     model = PeftModel.from_pretrained(base, f"{a.out}/lora_best").eval()

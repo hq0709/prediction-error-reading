@@ -7,6 +7,7 @@ current one (a third input channel), trained on training pairs without any new f
     CUDA_VISIBLE_DEVICES=0 python train_cxr_wm.py --course --steps 30000 --out runs_wm/cxr_course
     CUDA_VISIBLE_DEVICES=6 python train_cxr_wm.py --scale 4 --out runs_wm/cxr_nll_s4     # 16 cm hidden, whole-image context
     CUDA_VISIBLE_DEVICES=5 python train_cxr_wm.py --canvas 1024 --out runs_wm/cxr_nll_1024  # 1024 grid: 2 cm hidden
+    CUDA_VISIBLE_DEVICES=5 python train_cxr_wm.py --table results/cxr_nih_normals.csv --out runs_wm/cxr_nll_nih  # NIH site
 """
 import argparse
 import math
@@ -56,6 +57,7 @@ def main():
     ap.add_argument("--course", action="store_true", help="also condition on the registered prior radiograph")
     ap.add_argument("--scale", type=int, default=1, help="train on the radiograph downscaled by this factor")
     ap.add_argument("--canvas", type=int, default=512, help="1024: the build_cxr1024.py grid (its 40k training images)")
+    ap.add_argument("--table", default=None, help="another site's normal images (key, split), e.g. results/cxr_nih_normals.csv")
     a = ap.parse_args()
     global CACHE
     if a.canvas == 1024:
@@ -71,6 +73,9 @@ def main():
         train, val = normal[normal.split == "train"].key.tolist(), normal[normal.split == "validate"].key.tolist()
         if a.canvas == 1024:
             train = open("runs_wm/cxr1024_train_keys.txt").read().split()
+    if a.table:
+        t = pd.read_csv(a.table)
+        train, val = t[t.split == "train"].key.tolist(), t[t.split == "validate"].key.tolist()
     print(f"{len(train)} training images, {len(val)} validation images", flush=True)
     assert not (a.course and a.scale > 1)
     dl = DataLoader(Windows(train, 0, a.course, a.scale), batch_size=a.bs, num_workers=12, pin_memory=True, persistent_workers=True)
