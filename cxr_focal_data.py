@@ -45,18 +45,19 @@ PROPOSER = "wm"
 
 def addresses(key):
     img = np.load(f"{CACHE}/{key}.npy")
-    D = search_domain(key, valid_region(img)) if PROPOSER != "wmr" else valid_region(img)
+    D = search_domain(key, valid_region(img)) if PROPOSER not in ("wmr", "wmur") else valid_region(img)
     if PROPOSER in ("wm", "wmh", "wmr", "wmn", "wma"):                   # wmh: the 1024-grid world model (train_cxr_wm.py --canvas 1024)
         t = {"wmh": "cxrh", "wmn": "cxrn", "wma": "cxra"}.get(PROPOSER, "cxr")  # wmn: trained on NIH normals; wma: on any MIMIC image
         R = np.load(f"{ROOT}/cache/cxr_wm/{key}.{t}R.npy").astype(np.float32)
         S = np.load(f"{ROOT}/cache/cxr_wm/{key}.{t}S.npy").astype(np.float32)
         W = error_map(R, S, 2.0, 1)
-    elif PROPOSER in ("wmu", "wmu3"):                             # both (wmu3: and the site's own normal-radiograph model):
-        lists = []                                                # addresses taken in turn, repeats within 16 px dropped
-        for t in (("cxr", "cxrh") if PROPOSER == "wmu" else ("cxr", "cxrh", "cxrn")):
+    elif PROPOSER in ("wmu", "wmu3", "wmuraw", "wmur"):            # wmur: both, over the whole radiograph                   # both (wmu3: and the site's own normal-radiograph model;
+        lists = []                                                # wmuraw: raw residual, no precision weighting):
+        for t in (("cxr", "cxrh", "cxrn") if PROPOSER == "wmu3" else ("cxr", "cxrh")):   # in turn, repeats within 16 px dropped
             R = np.load(f"{ROOT}/cache/cxr_wm/{key}.{t}R.npy").astype(np.float32)
             S = np.load(f"{ROOT}/cache/cxr_wm/{key}.{t}S.npy").astype(np.float32)
-            lists.append(peaks(error_map(R, S, 2.0, 1), D, k=K, nms=NMS))
+            W = ndi.gaussian_filter(R, 2.0) if PROPOSER == "wmuraw" else error_map(R, S, 2.0, 1)
+            lists.append(peaks(W, D, k=K, nms=NMS))
         out = []
         for ps in zip(*lists):
             for p in ps:
@@ -145,7 +146,7 @@ def main():
     global PROPOSER
     ap = argparse.ArgumentParser()
     ap.add_argument("which", choices=["cxdet", "nih", "mimic", "mimic_train"])
-    ap.add_argument("--proposer", choices=["wm", "wmh", "wmu", "wmu3", "wmr", "wmn", "wma", "patchcore", "random", "grid"], default="wm")
+    ap.add_argument("--proposer", choices=["wm", "wmh", "wmu", "wmu3", "wmuraw", "wmur", "wmr", "wmn", "wma", "patchcore", "random", "grid"], default="wm")
     ap.add_argument("--split", default=None, help="only this split (e.g. test)")
     a = ap.parse_args()
     PROPOSER = a.proposer

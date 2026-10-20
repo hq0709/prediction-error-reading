@@ -685,3 +685,24 @@ The general form of the error is two-sided: the magnitude of the precision-weigh
   0.73. Earlier final: 0.85 / 0.73. SAT-Pro 0.94* / 0.88, VISTA3D 0.94* / 0.85.
 - The two-sided form was motivated by looking at the external misses. The choice between the two pipelines is a tie on
   the development site and is made by the principle that a finding is a departure of either sign.
+
+**Liver, reader trained on the 30 addresses it reads (2026-10-19 night).** Two-sided error, reader retrained on the top 30
+(`runs_reader/q8_liver_t08h3`, Task08 dev cases held out). On the 100 Task08 development cases the best configuration
+is K = 30, two-sided fused list, max-p, at 0.95 (best one-sided 0.94). Applied unchanged: MSD 0.91, HCC-TACE-Seg external
+0.85 (VISTA3D 0.85, SAT-Pro 0.88).
+
+**Radiograph leave-one-out ablation with the final reader** (`runs_reader/cxr_focal_wmu --score-only`; ChestX-Det
+AUROC / hit / LROC). Full 0.847 / 0.650 / 0.584.
+- Random thorax points: 0.754 / 0.277 / 0.256.
+- No precision weighting (raw residual): 0.812 / 0.578 / 0.528.
+- World-model error alone: 0.516 / 0.158 / 0.083.
+- Whole radiograph instead of the thorax: 0.781 / 0.540 / 0.474.
+- 512 grid only: 0.826 / 0.605 / 0.552.
+- 1024 grid only: 0.827 / 0.561 / 0.508.
+
+A reader trained on three world models' addresses (with the NIH-normal model, `cxr_focal_wmu3`) is worse:
+ChestX-Det 0.824 / 0.547 / 0.505, NIH LROC 0.460. Not adopted. Adding the NIH model's addresses to the final reader
+gives 0.601 / 0.464 (see above).
+
+**External lung, MSD Task06** (`eval_task06.py`): PER 0.57 (<= 30 mm 0.65, > 30 mm 0.35); 3-D RetinaNet 0.49 / 0.65 / 0.06;
+MedicalNet 0.46 / 0.61 / 0.06; world model's top 10 contain a tumour in 0.84 (large 0.82).
