@@ -42,16 +42,17 @@ def lesion_of(P, zyx):
     return int(sub[j]) if d[j] <= TOL else 0
 
 
-def main(path, data="data/course_reader", k=10, sources="prior,wm"):
-    """Candidates per pair: every prior finding (if the data has them) plus the world model's top k addresses;
-    sources restricts them (ablations: "prior" = history only, "wm" = world model only)."""
+def summary(sets, k=10, sources="prior,wm"):
+    """sets: [(reader scores path, data dir), ...], pooled over all their pairs (e.g. the folds of a cross-validation).
+    Candidates per pair: every prior finding (if the data has them) plus the world model's top k addresses; sources
+    restricts them (ablations: "prior" = history only, "wm" = world model only). Returns the metrics as a dict."""
     keep = set(sources.split(","))
-    res = json.load(open(path))
-    meta = {(r["uid"], r["peak"]): r for r in map(json.loads, open(f"{data}/eval{'' if k <= 10 else '_k30'}.jsonl"))}
     by = defaultdict(list)
-    for r in res:
-        m = meta[(r["uid"], r["peak"])]
-        by[r["uid"]].append({**r, "zyx": m["zyx"], "source": m.get("source", "wm")})
+    for path, data in sets:
+        meta = {(r["uid"], r["peak"]): r for r in map(json.loads, open(f"{data}/eval{'' if k <= 10 else '_k30'}.jsonl"))}
+        for r in json.load(open(path)):
+            m = meta[(r["uid"], r["peak"])]
+            by[r["uid"]].append({**r, "zyx": m["zyx"], "source": m.get("source", "wm")})
     score = lambda c: c["wm"] * c["p"]                     # WM x reader; raw, so that pairs are comparable
     rules = {"wm_x_reader": lambda cs: max(cs, key=score), "reader_maxp": lambda cs: max(cs, key=lambda c: c["p"])}
     out, y, s, found, total = defaultdict(list), [], [], 0, 0
@@ -77,10 +78,16 @@ def main(path, data="data/course_reader", k=10, sources="prior,wm"):
     y, s = np.array(y), np.array(s)
     pos, neg = s[y == 1], s[y == 0]
     auc = np.mean([(a > b) + 0.5 * (a == b) for a in pos for b in neg]) if len(pos) and len(neg) else float("nan")
-    print(f"{path}  K={k}: pairs with a target {len(out['oracle'])} | " +
-          " | ".join(f"{n} {np.mean(v):.2f}" for n, v in out.items()) +
-          f" | lesion recall {found}/{total} = {found / max(total, 1):.2f} | progression AUROC {auc:.3f} ({len(pos)} vs {len(neg)} pairs)"
-          f" [{sources}]")
+    return {**{n: float(np.mean(v)) for n, v in out.items()}, "pairs_with_target": len(out["oracle"]), "found": found,
+            "targets": total, "lesion_recall": found / max(total, 1), "auroc": float(auc), "pos": len(pos), "neg": len(neg)}
+
+
+def main(path, data="data/course_reader", k=10, sources="prior,wm"):
+    m = summary([(path, data)], k, sources)
+    print(f"{path}  K={k}: pairs with a target {m['pairs_with_target']} | " +
+          " | ".join(f"{n} {m[n]:.2f}" for n in ("wm_x_reader", "reader_maxp", "wm_top1", "oracle")) +
+          f" | lesion recall {m['found']}/{m['targets']} = {m['lesion_recall']:.2f} | progression AUROC {m['auroc']:.3f}"
+          f" ({m['pos']} vs {m['neg']} pairs) [{sources}]")
 
 
 if __name__ == "__main__":

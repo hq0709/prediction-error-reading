@@ -7,6 +7,7 @@ on Task08 is applied unchanged. Two-row strips (60 and 150 mm) as the final live
     python make_liver_kdev.py split                       # dev cases; reader training rows without them
     python make_liver_kdev.py strips t08|ext|msd <tag>    # data/liver_k30_<set>_<list>/eval.jsonl for each list
     KDEV_ONLY=fused2,learned2 python make_liver_kdev.py strips ext lt08    # only these lists (two-sided error)
+    KDEV_ONLY=fused2 LIVER_SIGMA=2 LIVER_HP_SUFFIX=_s2 python make_liver_kdev.py strips t08 lt08   # hyperparameter sweep
 The learned model's error is one-sided in the earlier lists (darker than expected, the MSD metastases); fused2 and
 learned2 use departures of either sign, since hyper-enhancing tumours are brighter than the liver predicts.
 """
@@ -25,6 +26,12 @@ NAMES = ("fused", "prior", "learned", "fused2", "learned2")    # 2: the learned 
 ONLY = [n for n in os.environ.get("KDEV_ONLY", "").split(",") if n]
 SETS = {"t08": "liver_t08", "ext": "liver_ext", "msd": "liver"}
 TAG = "lt08"
+# hyperparameter sweep (appendix): the learned model's smoothing (mm), the reciprocal-rank constant and the suppression
+# width (mm) of the learned list and the fusion; LIVER_HP_SUFFIX keeps a variant's strips and rows apart
+SIGMA = float(os.environ.get("LIVER_SIGMA", 3.0))
+RRF_C = float(os.environ.get("LIVER_RRF_C", 10.0))
+NMS = float(os.environ.get("LIVER_NMS", 15.0))
+SUFFIX = os.environ.get("LIVER_HP_SUFFIX", "")
 
 
 def module(which):
@@ -40,10 +47,10 @@ def module(which):
 
 def lists(s, which, cache):
     prior = (LiverPrior(cache=cache) if cache else LiverPrior()).top(s, 60)
-    learned = ContextPrior(tag=TAG, sigma=3.0, organ=SETS[which]).top(s, 60, nms_mm=15.0)
-    both = ContextPrior(tag=TAG, sigma=3.0, organ=SETS[which], two_sided=True).top(s, 60, nms_mm=15.0)
-    return {"fused": fuse_rrf([prior, learned], s.spacing, c=10.0, nms_mm=15.0)[:K], "prior": prior[:K], "learned": learned[:K],
-            "fused2": fuse_rrf([prior, both], s.spacing, c=10.0, nms_mm=15.0)[:K], "learned2": both[:K]}
+    learned = ContextPrior(tag=TAG, sigma=SIGMA, organ=SETS[which]).top(s, 60, nms_mm=NMS)
+    both = ContextPrior(tag=TAG, sigma=SIGMA, organ=SETS[which], two_sided=True).top(s, 60, nms_mm=NMS)
+    return {"fused": fuse_rrf([prior, learned], s.spacing, c=RRF_C, nms_mm=NMS)[:K], "prior": prior[:K], "learned": learned[:K],
+            "fused2": fuse_rrf([prior, both], s.spacing, c=RRF_C, nms_mm=NMS)[:K], "learned2": both[:K]}
 
 
 def work(job):
@@ -54,7 +61,7 @@ def work(job):
     for name, pts in lists(s, which, cache).items():
         if ONLY and name not in ONLY:
             continue
-        d = f"data/liver_k30_{which}_{name}"
+        d = f"data/liver_k30_{which}_{name}{SUFFIX}"
         rows = []
         for r in liver_strips(s, pts, label_fn=label_at, context_fov=CONTEXT_FOV):
             path = os.path.abspath(f"{d}/img/{case}_wm{r['peak']}.png")
@@ -86,13 +93,17 @@ def main():
     _, _, _, cases = module(which)
     names = [n for n in NAMES if not (ONLY and n not in ONLY)]
     for name in names:
-        os.makedirs(f"data/liver_k30_{which}_{name}/img", exist_ok=True)
+        os.makedirs(f"data/liver_k30_{which}_{name}{SUFFIX}/img", exist_ok=True)
     with Pool(24) as p:
         res = p.map(work, [(which, c) for c in cases], chunksize=1)
     for name in names:
         rows = [r for x in res for r in x[name]]
-        with open(f"data/liver_k30_{which}_{name}/eval.jsonl", "w") as f:
+        with open(f"data/liver_k30_{which}_{name}{SUFFIX}/eval.jsonl", "w") as f:
             f.writelines(json.dumps(r) + "\n" for r in rows)
+        if SUFFIX:                       # a copy named for score_reader.py's output file
+            os.makedirs(f"data/liver_k30_{which}_{name}{SUFFIX}/s", exist_ok=True)
+            with open(f"data/liver_k30_{which}_{name}{SUFFIX}/s/eval_{which}_{name}{SUFFIX}.jsonl", "w") as f:
+                f.writelines(json.dumps(r) + "\n" for r in rows)
         by = {}
         for r in rows:
             by.setdefault(r["uid"], []).append(r)

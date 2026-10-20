@@ -82,6 +82,29 @@ def build_iso(key: str) -> None:
     np.save(stem + ".meta.npy", {"lo_mm": lo, "spacing": sp, "shape": shape, "n_all": len(allc), "n_dense": len(dense)})
 
 
+def all_centres(key: str):
+    """Training centres without the target exclusion, for a world model trained without any lesion annotation: the
+    same draw as build_iso (inside the domain, the cube inside the volume, half where the two time points differ) with
+    target lesions left in. Cached as <key>.centres_all.npy."""
+    stem = f"{ISO}/{key}"
+    if not os.path.exists(stem + ".centres_all.npy"):
+        meta = np.load(stem + ".meta.npy", allow_pickle=True).item()
+        if meta.get("empty"):
+            return np.zeros((0, 3), np.int16)
+        FU, BL, D, _ = load_iso(key)
+        shape, h = D.shape, CTX // 2
+        inner = np.zeros(shape, bool)
+        if min(shape) > CTX:
+            inner[h:shape[0] - h, h:shape[1] - h, h:shape[2] - h] = True
+        ok = (np.asarray(D) > 0) & inner
+        rng = np.random.default_rng(zlib.crc32(key.encode()))
+        allc = np.argwhere(ok)
+        dense = np.argwhere(ok & (np.abs(np.asarray(FU, np.float32) - np.asarray(BL, np.float32)) > 50))
+        pick = lambda a, n: a[rng.choice(len(a), size=min(n, len(a)), replace=False)] if len(a) else a.reshape(0, 3)  # noqa: E731
+        np.save(stem + ".centres_all.npy", np.concatenate([pick(allc, 20000), pick(dense, 20000)]).astype(np.int16))
+    return np.load(stem + ".centres_all.npy")
+
+
 def load_iso(key: str):
     stem = f"{ISO}/{key}"
     meta = np.load(stem + ".meta.npy", allow_pickle=True).item()

@@ -61,9 +61,12 @@ def build(arch):
     return model
 
 
-def sample(key, by):
-    x = torch.from_numpy(np.load(f"{CACHE}/{key}.npy")).float().div(255)[None].expand(3, -1, -1).contiguous()
-    bb = by.get(key, [])
+def sample(key, by, rng=None):
+    img, bb = np.load(f"{CACHE}/{key}.npy"), by.get(key, [])
+    if rng is not None:                      # training augmentation (--aug, cxr_aug.py)
+        from cxr_aug import augment
+        img, bb = augment(img, bb, rng)
+    x = torch.from_numpy(img).float().div(255)[None].expand(3, -1, -1).contiguous()
     t = {"boxes": torch.tensor([[b["x"], b["y"], b["x"] + max(b["w"], 2), b["y"] + max(b["h"], 2)] for b in bb], dtype=torch.float32).view(-1, 4),
          "labels": torch.tensor([TYPES.index(b["finding"]) + 1 for b in bb], dtype=torch.int64)}
     return x, t
@@ -116,6 +119,7 @@ def main():
     ap.add_argument("--train-keys", default=None, help="only these training images (few-box settings)")
     ap.add_argument("--balance", action="store_true", help="class-balanced epochs (cxr_balance.py)")
     ap.add_argument("--score-sets", action="store_true", help="score MIMIC validate/test and NIH with the trained detector")
+    ap.add_argument("--aug", action="store_true", help="scale, translation, brightness and contrast jitter (cxr_aug.py)")
     a = ap.parse_args()
     random.seed(0); torch.manual_seed(0)
     os.makedirs(a.out, exist_ok=True)
@@ -144,11 +148,12 @@ def main():
     steps = a.epochs * (len(tr_keys) // a.bs)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1, (s + 1) / 300) * 0.5 * (1 + np.cos(np.pi * s / steps)))
     best = -1.0
+    aug_rng = np.random.default_rng(0)
     for ep in range(a.epochs):
         random.shuffle(tr_keys)
         tot = []
         for i in range(0, len(tr_keys) - a.bs + 1, a.bs):
-            batch = [sample(k, by) for k in tr_keys[i:i + a.bs]]
+            batch = [sample(k, by, aug_rng if a.aug else None) for k in tr_keys[i:i + a.bs]]
             xs = [x.to(dev) for x, _ in batch]
             ts = [{k: v.to(dev) for k, v in t.items()} for _, t in batch]
             loss = sum(model(xs, ts).values())

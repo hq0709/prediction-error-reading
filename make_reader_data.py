@@ -8,7 +8,8 @@ Training pool (LUNA16 scans outside every evaluation set; 10% of scans held out 
         (resp. 1 mm) of the annotated centre, to give the reader more positives and hard negatives.
 Evaluation (--eval LO HI): the top-K world-model peaks of pilot_cases()[LO:HI], nothing else.
 --proposal picks the world model: shape (default), context (the learned anatomy model; context_raw without the
-precision weighting, the ablation), mixed (the two
+precision weighting, the ablation), patchcore (PatchCore peaks saved by ct_patchcore.py, a non-predictive model of
+normal), mixed (the two
 rank-interleaved), fused (the two fused by reciprocal rank), or intensity (no world model, the ablation); --out
 keeps each proposal's data apart.
 
@@ -35,8 +36,34 @@ K = 10
 GT = False
 PROPOSAL = "shape"
 CTX_TAG = "nll"
+SIGMA, NMS, TWO_SIDED = 2.0, 10.0, False
+
+
+class _Saved:
+    """Addresses saved by another proposer: a results JSON with each scan's ranked peaks in original voxel coordinates
+    (e.g. ct_patchcore.py's PatchCore peaks)."""
+
+    def __init__(self, path):
+        self.by = {r["uid"]: r["peaks"] for r in json.load(open(path))}
+
+    def top(self, study, k=10):
+        return [tuple(p) for p in self.by[study.case_id][:k]]
+
+
+class _Top:
+    """A proposal with its non-maximum suppression width fixed (the hyperparameter sweep)."""
+
+    def __init__(self, prop, nms_mm):
+        self.prop, self.nms_mm = prop, nms_mm
+
+    def top(self, study, k=10):
+        return self.prop.top(study, k, nms_mm=self.nms_mm)
+
+
 PROPOSALS = {"shape": lambda: ShapePrior(), "intensity": lambda: IntensityPeaks(),
-             "context": lambda: ContextPrior(CTX_TAG), "context_raw": lambda: ContextPrior(CTX_TAG, weight="none"),
+             "context": lambda: _Top(ContextPrior(CTX_TAG, sigma=SIGMA, two_sided=TWO_SIDED), NMS),
+             "patchcore": lambda: _Saved("results/ct_patchcore_wrn50_recall.json"),
+             "context_raw": lambda: ContextPrior(CTX_TAG, weight="none"),
              "mixed": lambda: MixedPrior(CTX_TAG, weight="pool"),
              "fused": lambda: FusedPrior(CTX_TAG, weight="pool")}
 
@@ -83,8 +110,12 @@ if __name__ == "__main__":
     ap.add_argument("--ctx-tag", default="nll", help="cached error of the learned world model to use")
     ap.add_argument("--k", type=int, default=10, help="candidates per scan")
     ap.add_argument("--out", default=OUT)
+    ap.add_argument("--sigma", type=float, default=2.0, help="smoothing of the context error (mm; sweep)")
+    ap.add_argument("--nms", type=float, default=10.0, help="non-maximum suppression half-width (mm; sweep)")
+    ap.add_argument("--two-sided", action="store_true", help="departures of either sign (magnitude of the error; sweep)")
     a = ap.parse_args()
     K, OUT, CTX_TAG = a.k, os.path.abspath(a.out), a.ctx_tag
+    SIGMA, NMS, TWO_SIDED = a.sigma, a.nms, a.two_sided
     GT = a.gt and not a.eval
     PROPOSAL = a.proposal
     os.makedirs(f"{OUT}/img", exist_ok=True)

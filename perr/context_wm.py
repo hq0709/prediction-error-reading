@@ -23,7 +23,7 @@ from scipy import ndimage as ndi
 
 LUNA_CACHE = "/raid/home/CAMCA/hj880/perr/cache/luna"
 ISO = "/raid/home/CAMCA/hj880/perr/cache/iso"
-CTX, HOLE, BLOCK = 64, 24, 8          # mm (= voxels at 1 mm)
+CTX, HOLE, BLOCK = 64, int(os.environ.get("PERR_HOLE", 24)), 8   # mm (= voxels at 1 mm); PERR_HOLE: hidden-size sweep
 MARGIN = 36                           # mm of tissue kept around the organ domain
 RIM = 5                               # mm: the domain is grown by this much so that juxtapleural nodules are inside
 # Per organ: source cache, domain mask, 1 mm cache, intensity window, and the sign of a finding (nodules are denser

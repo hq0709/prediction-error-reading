@@ -17,6 +17,7 @@ Calcification, Fracture.
     python cxr_focal_data.py cxdet --proposer wmr     # ablation: the world model's addresses over the whole radiograph
     python cxr_focal_data.py cxdet --proposer wmn --split test   # the 512 world model trained on NIH normals (another site)
     python cxr_focal_data.py cxdet --proposer wma --split test   # the 512 world model trained on MIMIC images of any label
+    python cxr_focal_data.py cxdet --proposer wmu --name hp_s3 --sigma 3 --split test   # hyperparameter sweep (appendix)
 
 Writes data/cxr_focal/<proposer>/<set>.jsonl (one row per address) and the views under data/cxr_focal/views/.
 """
@@ -41,6 +42,9 @@ TYPES = ("Nodule", "Mass", "Calcification", "Fracture")
 K, NMS, SIDE = 30, 16, 224
 CTX_FRAC, DET_FRAC = 0.3, 0.1
 PROPOSER = "wm"
+NAME = "wm"            # output name; sweep variants of a proposer (--name) keep their own rows and views
+SIGMA = 2.0
+SIGN = 1               # +1: brighter than expected (final); 0: either sign (magnitude)
 
 
 def addresses(key):
@@ -50,13 +54,13 @@ def addresses(key):
         t = {"wmh": "cxrh", "wmn": "cxrn", "wma": "cxra"}.get(PROPOSER, "cxr")  # wmn: trained on NIH normals; wma: on any MIMIC image
         R = np.load(f"{ROOT}/cache/cxr_wm/{key}.{t}R.npy").astype(np.float32)
         S = np.load(f"{ROOT}/cache/cxr_wm/{key}.{t}S.npy").astype(np.float32)
-        W = error_map(R, S, 2.0, 1)
+        W = error_map(R, S, SIGMA, 1)
     elif PROPOSER in ("wmu", "wmu3", "wmuraw", "wmur"):            # wmur: both, over the whole radiograph                   # both (wmu3: and the site's own normal-radiograph model;
         lists = []                                                # wmuraw: raw residual, no precision weighting):
         for t in (("cxr", "cxrh", "cxrn") if PROPOSER == "wmu3" else ("cxr", "cxrh")):   # in turn, repeats within 16 px dropped
             R = np.load(f"{ROOT}/cache/cxr_wm/{key}.{t}R.npy").astype(np.float32)
             S = np.load(f"{ROOT}/cache/cxr_wm/{key}.{t}S.npy").astype(np.float32)
-            W = ndi.gaussian_filter(R, 2.0) if PROPOSER == "wmuraw" else error_map(R, S, 2.0, 1)
+            W = ndi.gaussian_filter(R, SIGMA) if PROPOSER == "wmuraw" else error_map(R, S, SIGMA, SIGN)
             lists.append(peaks(W, D, k=K, nms=NMS))
         out = []
         for ps in zip(*lists):
@@ -103,7 +107,7 @@ def work(item):
                     pts.append((cr + jit * b["h"] * rng.uniform(-1, 1), cc + jit * b["w"] * rng.uniform(-1, 1), 0.0, "gt"))
     orig = Image.open(path).convert("L")
     rows = []
-    vdir = f"{OUT}/views/{PROPOSER}/{key}"
+    vdir = f"{OUT}/views/{NAME}/{key}"
     os.makedirs(vdir, exist_ok=True)
     for i, (r, c, v, src) in enumerate(pts):
         x, y = (c - geo["pad_x"]) / geo["scale"], (r - geo["pad_y"]) / geo["scale"]
@@ -126,7 +130,7 @@ def items(which):
         for (_, r), s in zip(g.iterrows(), split):
             path = r.path if "path" in g else f"/raid/home/CAMCA/hj880/data_ext/chestx_det/images/{s}/{r.image}"
             yield s, (r.key, path, {"scale": r.scale, "pad_x": r.pad_x, "pad_y": r.pad_y}, by.get(r.key, []),
-                      s == "train" and PROPOSER in ("wm", "wmu"))
+                      s == "train" and PROPOSER in ("wm", "wmu") and NAME == PROPOSER)
     else:
         from perr.cxr import letterbox, mimic_frontal                     # noqa: F401
         m = mimic_frontal()
@@ -143,20 +147,27 @@ def items(which):
 
 
 def main():
-    global PROPOSER
+    global PROPOSER, NAME, SIGMA, NMS, K, SIGN
     ap = argparse.ArgumentParser()
     ap.add_argument("which", choices=["cxdet", "nih", "mimic", "mimic_train"])
     ap.add_argument("--proposer", choices=["wm", "wmh", "wmu", "wmu3", "wmuraw", "wmur", "wmr", "wmn", "wma", "patchcore", "random", "grid"], default="wm")
     ap.add_argument("--split", default=None, help="only this split (e.g. test)")
+    ap.add_argument("--name", default=None, help="output name of a sweep variant (default: the proposer)")
+    ap.add_argument("--sigma", type=float, default=2.0, help="smoothing of the world-model error (px; sweep)")
+    ap.add_argument("--nms", type=int, default=16, help="suppression half-width (px; sweep)")
+    ap.add_argument("--k", type=int, default=30, help="addresses per world model (sweep)")
+    ap.add_argument("--keys", default=None, help="only these images (e.g. the reader's held-out tenth of ChestX-Det train)")
+    ap.add_argument("--sign", type=int, default=1, choices=(1, 0), help="1: brighter than expected; 0: either sign (sweep)")
     a = ap.parse_args()
-    PROPOSER = a.proposer
-    its = [it for it in items(a.which) if a.split is None or it[0] == a.split]
+    PROPOSER, NAME, SIGMA, NMS, K, SIGN = a.proposer, a.name or a.proposer, a.sigma, a.nms, a.k, a.sign
+    keep = set(open(a.keys).read().split()) if a.keys else None
+    its = [it for it in items(a.which) if (a.split is None or it[0] == a.split) and (keep is None or it[1][0] in keep)]
     with Pool(48) as p:
         res = p.map(work, [it for _, it in its], chunksize=2)
-    os.makedirs(f"{OUT}/{PROPOSER}", exist_ok=True)
+    os.makedirs(f"{OUT}/{NAME}", exist_ok=True)
     for split in sorted({s for s, _ in its}):
         rows = [r for (s, _), rr in zip(its, res) if s == split for r in rr]
-        with open(f"{OUT}/{PROPOSER}/{a.which.split('_')[0]}_{split}.jsonl", "w") as f:
+        with open(f"{OUT}/{NAME}/{a.which.split('_')[0]}_{split}.jsonl", "w") as f:
             for r in rows:
                 f.write(json.dumps(r) + "\n")
         pos = {t: sum(r[t] for r in rows) for t in TYPES}

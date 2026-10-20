@@ -10,6 +10,8 @@ is trained without any lesion annotation. --stop-at ends training early under th
 in use is the best checkpoint of the first 10k of 40k steps).
 
     CUDA_VISIBLE_DEVICES=7 python train_context_wm.py --steps 40000 --stop-at 10000 --nll --no-exclusion --out runs_wm/ctx_free
+
+Hyperparameter sweeps (appendix): --beta, --train-frac, and the hidden size through the environment (PERR_HOLE=16).
 """
 import argparse
 import json
@@ -74,11 +76,16 @@ def main():
     ap.add_argument("--extra-cases", help="file of further training cases cached in the same 1 mm folder (e.g. CRLM)")
     ap.add_argument("--no-exclusion", action="store_true", help="annotated lesions left in the training cubes")
     ap.add_argument("--stop-at", type=int, default=None, help="stop after this many steps of the --steps schedule")
+    ap.add_argument("--beta", type=float, default=0.5, help="beta of the beta-NLL (0: Gaussian NLL; 1: MSE-like mean gradient)")
+    ap.add_argument("--train-frac", type=float, default=1.0, help="train on this share of the normal training scans (seeded)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     train, dev = dev_split(a.organ)
     if a.extra_cases:
         train += open(a.extra_cases).read().split()
+    if a.train_frac < 1:
+        train = sorted(np.random.default_rng(1).choice(train, size=round(len(train) * a.train_frac), replace=False).tolist())
+        print(f"training scans: {len(train)} ({a.train_frac:.0%})", flush=True)
     json.dump({"train": train, "dev": dev}, open(f"{a.out}/split.json", "w"))
     centres = "centres"
     if a.no_exclusion:
@@ -104,7 +111,7 @@ def main():
         if not a.nll or mse_only:
             return (se * M).sum() / (M.sum() * x.shape[0])
         s = pred[:, 1:].clamp(-12, 3)
-        nll = 0.5 * (se * torch.exp(-s) + s) * torch.exp(s).detach() ** 0.5      # beta-NLL, beta = 0.5
+        nll = 0.5 * (se * torch.exp(-s) + s) * torch.exp(s).detach() ** a.beta    # beta-NLL (final: beta = 0.5)
         return (nll * M).sum() / (M.sum() * x.shape[0])
 
     @torch.no_grad()

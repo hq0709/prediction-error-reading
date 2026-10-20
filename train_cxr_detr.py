@@ -29,6 +29,17 @@ def images(keys):
     return [np.repeat(np.load(f"{CACHE}/{k}.npy")[..., None], 3, -1) for k in keys]
 
 
+def augmented(keys, by, rng):
+    """Images and boxes of a training batch under cxr_aug.augment (--aug)."""
+    from cxr_aug import augment
+    imgs, bys = [], {}
+    for k in keys:
+        img, bb = augment(np.load(f"{CACHE}/{k}.npy"), by.get(k, []), rng)
+        imgs.append(np.repeat(img[..., None], 3, -1))
+        bys[k] = bb
+    return imgs, bys
+
+
 def targets(keys, by):
     out = []
     for k in keys:
@@ -80,6 +91,7 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--train-keys", default=None, help="only these training images (few-box settings)")
     ap.add_argument("--balance", action="store_true", help="class-balanced epochs (cxr_balance.py)")
+    ap.add_argument("--aug", action="store_true", help="scale, translation, brightness and contrast jitter (cxr_aug.py)")
     a = ap.parse_args()
     random.seed(0); torch.manual_seed(0)
     os.makedirs(a.out, exist_ok=True)
@@ -110,13 +122,18 @@ def main():
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1, (s + 1) / 500) * 0.5 * (1 + np.cos(np.pi * s / steps)))
     name = os.path.basename(a.out.rstrip("/"))
     best = -1.0
+    aug_rng = np.random.default_rng(0)
     for ep in range(a.epochs):
         random.shuffle(tr_keys)
         tot = []
         for i in range(0, len(tr_keys) - a.bs + 1, a.bs):
             ks = tr_keys[i:i + a.bs]
-            enc = proc(images=images(ks), return_tensors="pt").to(dev)
-            lab = [{k: v.to(dev) for k, v in t.items()} for t in targets(ks, by)]
+            if a.aug:
+                imgs, bys = augmented(ks, by, aug_rng)
+            else:
+                imgs, bys = images(ks), by
+            enc = proc(images=imgs, return_tensors="pt").to(dev)
+            lab = [{k: v.to(dev) for k, v in t.items()} for t in targets(ks, bys)]
             loss = model(**enc, labels=lab).loss
             opt.zero_grad(); loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 0.1)

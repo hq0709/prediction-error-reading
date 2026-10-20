@@ -4,6 +4,7 @@ World-model dev split: 30 training patients are held out of training; their reca
 Validation and test patients (the evaluation set) are never read. Validation loss: hidden-part MSE on dev cubes.
 
     CUDA_VISIBLE_DEVICES=0 python train_course_wm.py --steps 30000 --out runs_wm/course_nll
+    CUDA_VISIBLE_DEVICES=0 python train_course_wm.py --steps 30000 --no-exclusion --out runs_wm/course_free   # no lesion annotation
 """
 import argparse
 import json
@@ -46,8 +47,8 @@ def dev_split(fold=None):
 class Cubes(IterableDataset):
     """(follow-up cube, registered-baseline cube) pairs centred on the cached training centres."""
 
-    def __init__(self, keys, seed, flip=True):
-        self.keys, self.seed, self.flip = keys, seed, flip
+    def __init__(self, keys, seed, flip=True, centres="centres"):
+        self.keys, self.seed, self.flip, self.centres = keys, seed, flip, centres
 
     def __iter__(self):
         wi = torch.utils.data.get_worker_info()
@@ -58,7 +59,7 @@ class Cubes(IterableDataset):
             if k not in cache:
                 if len(cache) >= 32:
                     cache.pop(next(iter(cache)))
-                C = np.load(f"{ISO}/{k}.centres.npy")
+                C = np.load(f"{ISO}/{k}.{self.centres}.npy")
                 cache[k] = (np.load(f"{ISO}/{k}.fu.npy", mmap_mode="r"), np.load(f"{ISO}/{k}.bl.npy", mmap_mode="r"), C)
             FU, BL, C = cache[k]
             if len(C) == 0:
@@ -78,13 +79,21 @@ def main():
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--out", default="runs_wm/course_nll")
     ap.add_argument("--fold", type=int, help="leave this cross-validation fold of training patients out (0-2)")
+    ap.add_argument("--no-exclusion", action="store_true", help="target lesions left in the training cubes")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     train, dev = dev_split(a.fold)
     json.dump({"train": train, "dev": dev}, open(f"{a.out}/split.json", "w"))
     print(f"{len(train)} training pairs, {len(dev)} dev pairs", flush=True)
-    dl = DataLoader(Cubes(train, 0), batch_size=a.bs, num_workers=12, pin_memory=True, persistent_workers=True)
-    val = torch.stack([c for c, _ in zip(Cubes(dev, 12345, flip=False), range(512))])
+    centres = "centres"
+    if a.no_exclusion:
+        from multiprocessing import Pool
+        from perr.course_wm import all_centres
+        with Pool(16) as p:
+            p.map(all_centres, train + dev, chunksize=1)
+        centres = "centres_all"
+    dl = DataLoader(Cubes(train, 0, centres=centres), batch_size=a.bs, num_workers=12, pin_memory=True, persistent_workers=True)
+    val = torch.stack([c for c, _ in zip(Cubes(dev, 12345, flip=False, centres=centres), range(512))])
     model = make_unet(out_ch=2, in_ch=3).cuda()
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.LambdaLR(
