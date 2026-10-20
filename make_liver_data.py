@@ -11,6 +11,7 @@ target tumour (centre jittered by up to 3 mm) and one per smaller tumour. Labels
 # LIVER_TWO_SIDED=1: the learned model's departures of either sign (hyper- as well as hypo-attenuating findings)
 import os as _os
 TWO_SIDED = _os.environ.get("LIVER_TWO_SIDED") == "1"
+TRAIN_K = int(_os.environ.get("LIVER_TRAIN_K", "10"))   # world-model addresses per case in the reader data
 import argparse
 import json
 import os
@@ -34,7 +35,7 @@ def proposal_top(s, k=10):
     if PROPOSAL == "context":
         return learned(k)
     if PROPOSAL == "fused":
-        return fuse_rrf([LiverPrior().top(s, 50), learned(50)], s.spacing, c=10.0, nms_mm=15.0)[:k]
+        return fuse_rrf([LiverPrior().top(s, max(50, 2 * k)), learned(max(50, 2 * k))], s.spacing, c=10.0, nms_mm=15.0)[:k]
     return LiverPrior().top(s, k)
 
 
@@ -50,7 +51,7 @@ def work(args):
     case, is_eval = args
     s = load_liver(case)
     ctx = CONTEXT_FOV if CONTEXT else None
-    rows = [dict(r, source="wm") for r in liver_strips(s, proposal_top(s, 10), context_fov=ctx)]
+    rows = [dict(r, source="wm") for r in liver_strips(s, proposal_top(s, TRAIN_K), context_fov=ctx)]
     if not is_eval:
         rng = np.random.default_rng(int(case.split("_")[1]))
         pts = []

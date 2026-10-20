@@ -51,18 +51,18 @@ def addresses(key):
         R = np.load(f"{ROOT}/cache/cxr_wm/{key}.{t}R.npy").astype(np.float32)
         S = np.load(f"{ROOT}/cache/cxr_wm/{key}.{t}S.npy").astype(np.float32)
         W = error_map(R, S, 2.0, 1)
-    elif PROPOSER == "wmu":                                       # both: addresses taken in turn, repeats within 16 px dropped
-        lists = []
-        for t in ("cxr", "cxrh"):
+    elif PROPOSER in ("wmu", "wmu3"):                             # both (wmu3: and the site's own normal-radiograph model):
+        lists = []                                                # addresses taken in turn, repeats within 16 px dropped
+        for t in (("cxr", "cxrh") if PROPOSER == "wmu" else ("cxr", "cxrh", "cxrn")):
             R = np.load(f"{ROOT}/cache/cxr_wm/{key}.{t}R.npy").astype(np.float32)
             S = np.load(f"{ROOT}/cache/cxr_wm/{key}.{t}S.npy").astype(np.float32)
             lists.append(peaks(error_map(R, S, 2.0, 1), D, k=K, nms=NMS))
         out = []
-        for a, b in zip(*lists):
-            for p in (a, b):
+        for ps in zip(*lists):
+            for p in ps:
                 if all(max(abs(p[0] - q[0]), abs(p[1] - q[1])) > NMS for q in out):
                     out.append(p)
-        return out[:2 * K]
+        return out[:len(lists) * K]
     elif PROPOSER == "patchcore":
         W = ndi.zoom(np.load(f"{ROOT}/cache/cxr_maps/patchcore/{key}.npy").astype(np.float32), 512 / 37, order=1)
     elif PROPOSER == "grid":                                       # every place: a 25 px lattice over the thorax
@@ -145,7 +145,7 @@ def main():
     global PROPOSER
     ap = argparse.ArgumentParser()
     ap.add_argument("which", choices=["cxdet", "nih", "mimic", "mimic_train"])
-    ap.add_argument("--proposer", choices=["wm", "wmh", "wmu", "wmr", "wmn", "wma", "patchcore", "random", "grid"], default="wm")
+    ap.add_argument("--proposer", choices=["wm", "wmh", "wmu", "wmu3", "wmr", "wmn", "wma", "patchcore", "random", "grid"], default="wm")
     ap.add_argument("--split", default=None, help="only this split (e.g. test)")
     a = ap.parse_args()
     PROPOSER = a.proposer

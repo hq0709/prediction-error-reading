@@ -10,6 +10,7 @@ validation cases.
 # LIVER_TWO_SIDED=1: the learned model's departures of either sign (hyper- as well as hypo-attenuating findings)
 import os as _os
 TWO_SIDED = _os.environ.get("LIVER_TWO_SIDED") == "1"
+TRAIN_K = int(_os.environ.get("LIVER_TRAIN_K", "10"))   # world-model addresses per case in the reader data
 import json
 import os
 import sys
@@ -27,8 +28,8 @@ HOLDOUT = 40          # CRLM cases kept for validation (with the MSD validation 
 
 def work(case):
     s = load_case(case)
-    learned = ContextPrior(tag=TAG, sigma=3.0, organ="liver_crlm", two_sided=TWO_SIDED).top(s, 50, nms_mm=15.0)
-    top = fuse_rrf([LiverPrior(cache=CACHE).top(s, 50), learned], s.spacing, c=10.0, nms_mm=15.0)[:10]
+    learned = ContextPrior(tag=TAG, sigma=3.0, organ="liver_crlm", two_sided=TWO_SIDED).top(s, max(50, 2 * TRAIN_K), nms_mm=15.0)
+    top = fuse_rrf([LiverPrior(cache=CACHE).top(s, max(50, 2 * TRAIN_K)), learned], s.spacing, c=10.0, nms_mm=15.0)[:TRAIN_K]
     ctx = CONTEXT_FOV if CONTEXT else None
     rows = [dict(r, source="wm") for r in liver_strips(s, top, label_fn=label_at, context_fov=ctx)]
     rng = np.random.default_rng(int(case.split("_")[1]))
