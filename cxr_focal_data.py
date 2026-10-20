@@ -24,6 +24,7 @@ Writes data/cxr_focal/<proposer>/<set>.jsonl (one row per address) and the views
 import argparse
 import json
 import os
+import zlib
 from multiprocessing import Pool
 
 import numpy as np
@@ -73,7 +74,7 @@ def addresses(key):
     elif PROPOSER == "grid":                                       # every place: a 25 px lattice over the thorax
         return [(r, c, 0.0) for r in range(12, 512, 25) for c in range(12, 512, 25) if D[r, c]]
     else:
-        W = np.random.default_rng(abs(hash(key)) % 2 ** 32).random((512, 512)).astype(np.float32)
+        W = np.random.default_rng(zlib.crc32(key.encode())).random((512, 512)).astype(np.float32)
     return peaks(W, D, k=K, nms=NMS)
 
 
@@ -99,7 +100,7 @@ def work(item):
     except FileNotFoundError:
         return []
     if train:                                                       # box centres, each with a jittered copy
-        rng = np.random.default_rng(abs(hash(key)) % 2 ** 32)
+        rng = np.random.default_rng(zlib.crc32(key.encode()))
         for b in bx:
             if b["finding"] in TYPES:
                 cr, cc = b["y"] + b["h"] / 2, b["x"] + b["w"] / 2

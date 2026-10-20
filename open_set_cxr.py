@@ -14,12 +14,14 @@ Writes results/open_set_cxr.csv.
 """
 import json
 import os
+import zlib
 from collections import defaultdict
 from multiprocessing import Pool
 
 import numpy as np
 import pandas as pd
 
+from choose_cxr_aug import chosen
 from cxr_recall import boxes
 from perr.cxr import CACHE
 from perr.cxr_anat import search_domain
@@ -29,8 +31,9 @@ ROOT = "/raid/home/CAMCA/hj880/perr"
 UNSEEN = ("Consolidation", "Effusion", "Fibrosis", "Pleural Thickening", "Cardiomegaly", "Emphysema", "Diffuse Nodule",
           "Atelectasis", "Pneumothorax")
 KS = (1, 4, 10, 30)
-DETECTORS = {"Faster R-CNN": "cxr_detector", "RetinaNet": "cxr_retinanet", "FCOS": "cxr_fcos", "YOLO11m": "cxr_yolo11m",
-             "RT-DETRv2-R50": "cxr_rtdetrv2", "Deformable DETR": "cxr_deformdetr", "one-shot Qwen3-VL-8B": "cxr_oneshot"}
+DETECTORS = {m: chosen(m) for m in ("Faster R-CNN", "RetinaNet", "FCOS", "RT-DETRv2-R50", "Deformable DETR",
+                                    "one-shot Qwen3-VL-8B")}              # augmentation on/off: choose_cxr_aug.py
+DETECTORS["YOLO11m"] = "cxr_yolo11m"
 
 
 def union_addresses(key, sign, k=30, nms=16):
@@ -52,7 +55,7 @@ def union_addresses(key, sign, k=30, nms=16):
 def random_addresses(key, k=60, nms=16):
     img = np.load(f"{CACHE}/{key}.npy")
     D = search_domain(key, valid_region(img))
-    W = np.random.default_rng(abs(hash(key)) % 2 ** 32).random(D.shape).astype(np.float32)
+    W = np.random.default_rng(zlib.crc32(key.encode())).random(D.shape).astype(np.float32)
     return key, [(r, c) for r, c, _ in peaks(W, D, k=k, nms=nms)]
 
 

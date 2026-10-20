@@ -11,7 +11,9 @@
   sweeps            one-at-a-time hyperparameter sweeps (hp_recall.py, make_reader_data.py, cxr_focal_data.py and
                     make_liver_kdev.py variants scored by the final readers)
   lung_ablation     lung hit per candidate source (world model, raw error, intensity, blob shape, PatchCore,
-                    two-sided error) under four rules, final reader fixed
+                    two-sided error) under four rules, final reader fixed; and the world-model candidates read by a
+                    reader trained on blob-filter candidates
+  cxr_aug           validation scores with and without training augmentation, and the chosen run (choose_cxr_aug.py)
 
     python collect_supp.py
 """
@@ -22,14 +24,16 @@ from collections import defaultdict
 import numpy as np
 import pandas as pd
 
+from choose_cxr_aug import chosen
 from cxr_recall import boxes
 from score_cxr_focal import TYPES, evaluate
 
 R = "results/cxr_focal"
-CXR_METHODS = [  # key, file stem under results/cxr_focal (cxdet_test / nih_test), K
-    ("frcnn", "cxr_detector/", 1), ("retinanet", "cxr_retinanet/", 1), ("fcos", "cxr_fcos/", 1),
-    ("yolo", "cxr_yolo11m/", 1), ("rtdetr", "cxr_rtdetrv2/", 1), ("defdetr", "cxr_deformdetr/", 1),
-    ("oneshot", "cxr_oneshot/", 1), ("per", "cxr_focal_wmu/wmu_", 60)]
+PER = chosen("PER (ours)")   # the kept full-data verifier run (with or without augmentation), choose_cxr_aug.py
+CXR_METHODS = [  # key, file stem under results/cxr_focal (cxdet_test / nih_test), K; augmentation: choose_cxr_aug.py
+    ("frcnn", f"{chosen('Faster R-CNN')}/", 1), ("retinanet", f"{chosen('RetinaNet')}/", 1), ("fcos", f"{chosen('FCOS')}/", 1),
+    ("yolo", "cxr_yolo11m/", 1), ("rtdetr", f"{chosen('RT-DETRv2-R50')}/", 1), ("defdetr", f"{chosen('Deformable DETR')}/", 1),
+    ("oneshot", f"{chosen('one-shot Qwen3-VL-8B')}/", 1), ("per", f"{chosen('PER (ours)')}/wmu_", 60)]
 
 
 def rows_of(path):
@@ -58,12 +62,12 @@ def per_finding(which, split):
         res = evaluate(keep_clean(rows_of(path), which), b, types, ks=(k,), rules=("max-p",))
         out[key] = {r.finding: {"AUROC": r.AUROC, "hit": r.hit, "LROC": r.LROC, "pos": int(r.pos)} for r in res.itertuples()}
     # PER with the NIH-normal world model's 30 addresses added (same final reader, max-p over 90 addresses)
-    add = f"{R}/cxr_focal_wmu/wmn_{which}_test.jsonl"
+    add = f"{R}/{PER}/wmn_{which}_test.jsonl"
     if os.path.exists(add):
         extra = rows_of(add)
         for r in extra:
             r["rank"] += 60
-        res = evaluate(keep_clean(rows_of(f"{R}/cxr_focal_wmu/wmu_{which}_test.jsonl") + extra, which), b, types, ks=(90,),
+        res = evaluate(keep_clean(rows_of(f"{R}/{PER}/wmu_{which}_test.jsonl") + extra, which), b, types, ks=(90,),
                        rules=("max-p",))
         out["per_site"] = {r.finding: {"AUROC": r.AUROC, "hit": r.hit, "LROC": r.LROC, "pos": int(r.pos)} for r in res.itertuples()}
     return out
@@ -87,17 +91,17 @@ def site():
             if os.path.exists(path):
                 res = evaluate(keep_clean(rows_of(path), which), b, types, ks=(30,), rules=("max-p",))
                 ent[pre] = {m: float(res[m].mean()) for m in ("AUROC", "hit", "LROC")}
-        base = keep_clean(rows_of(f"{R}/cxr_focal_wmu/wmu_{which}_test.jsonl"), which)
+        base = keep_clean(rows_of(f"{R}/{PER}/wmu_{which}_test.jsonl"), which)
         res = evaluate(base, b, types, ks=(60,), rules=("max-p",))
         ent["final"] = {m: float(res[m].mean()) for m in ("AUROC", "hit", "LROC")}
-        add = f"{R}/cxr_focal_wmu/wmn_{which}_test.jsonl"
+        add = f"{R}/{PER}/wmn_{which}_test.jsonl"
         if os.path.exists(add):
             extra = keep_clean(rows_of(add), which)
             for r in extra:
                 r["rank"] += 60
             res = evaluate(base + extra, b, types, ks=(90,), rules=("max-p",))
             ent["final+nih"] = {m: float(res[m].mean()) for m in ("AUROC", "hit", "LROC")}
-        ctl = f"{R}/cxr_focal_wmu/hp_k45_{which}_test.jsonl"
+        ctl = f"{R}/{PER}/hp_k45_{which}_test.jsonl"
         if os.path.exists(ctl):
             res = evaluate(keep_clean(rows_of(ctl), which), b, types, ks=(90,), rules=("max-p",))
             ent["final_k45"] = {m: float(res[m].mean()) for m in ("AUROC", "hit", "LROC")}
@@ -161,8 +165,8 @@ def sweeps():
     for name, k in (("hp_final", 60), ("hp_s1", 60), ("hp_s3", 60), ("hp_s4", 60), ("hp_n8", 60), ("hp_n24", 60),
                     ("hp_n32", 60), ("hp_k10", 20), ("hp_k20", 40), ("hp_k40", 80), ("hp_two", 60)):
         ent = {}
-        for split, path in (("dev", f"{R}/cxr_focal_wmu/{name}_cxdet_train.jsonl"),
-                            ("test", f"{R}/cxr_focal_wmu/{name if name != 'hp_final' else 'wmu'}_cxdet_test.jsonl")):
+        for split, path in (("dev", f"{R}/{PER}/{name}_cxdet_train.jsonl"),
+                            ("test", f"{R}/{PER}/{name if name != 'hp_final' else 'wmu'}_cxdet_test.jsonl")):
             if os.path.exists(path):
                 bs = b[b.split == ("train" if split == "dev" else "test")]
                 res = evaluate(rows_of(path), bs, TYPES, ks=(k,), rules=("max-p",))
@@ -211,6 +215,11 @@ LUNG_ABLATION = {   # candidate sources and error variants, final reader fixed (
     "shape": ("reader_abl_free_shape_eval_{}_{}.json", "data/abl_free_shape/eval_{}_{}.jsonl"),
     "patchcore": ("reader_abl_free_pc_eval_{}_{}.json", "data/abl_free_pc/eval_{}_{}.jsonl"),
     "two_sided": ("reader_hpt2_eval_{}_{}.json", "data/hpt2/eval_{}_{}.jsonl"),
+    # world-model candidates read by a verifier trained on blob-filter candidates (shtr_reader in queue/jobs3.tsv)
+    "verifier_on_blob": ("reader_q8_shapetrain_on_ctxfree_eval_{}_{}.json", "data/reader_ctxfree/eval_{}_{}.jsonl"),
+    # world model trained with nodule cubes excluded: read by the final verifier (lungx_score) and by its own (nm_k30)
+    "excluded_wm": ("reader_ctxfree_on_ctx_eval_{}_{}.json", "data/reader_ctx/eval_{}_{}.jsonl"),
+    "excluded_wm_own": ("reader_nm_k30_eval_k30_{}_{}.json", "data/reader_ctx/eval_k30_{}_{}.jsonl"),
 }
 
 
@@ -259,15 +268,17 @@ def course():
                 "pairs": m["pos"] + m["neg"]}
     return {"final": ent([("results/reader_q8_course_vis_fix_eval.json", "data/course_reader_fix")]),
             "cv": ent([(f"results/reader_q8_course_cv{i}_eval.json", f"data/course_cv{i}") for i in range(3)]),
-            "label_free": ent([("results/reader_q8_course_free_eval.json", "data/course_free_reader")])}
+            "label_free": ent([("results/reader_q8_course_free_eval.json", "data/course_free_reader")]),
+            "label_free_same": ent([("results/reader_q8_course_vis_on_free_eval.json", "data/course_free_reader")])}
 
 
-def label_free_liver():
-    """Liver world model retrained without lesion annotations (tag lt08free), its own verifier, K = 30, max-p."""
+def label_free_liver(verifier="q8_liver_free"):
+    """Liver world model retrained without lesion annotations (tag lt08free), K = 30, max-p; read by its own verifier
+    (q8_liver_free) or by the final verifier trained on the lesion-excluding world model's candidates (lfx_score)."""
     from collect_liver_kdev import hit
     out = {}
     for which in ("t08", "msd", "ext"):
-        path = f"results/reader_q8_liver_free_eval_{which}_fused2_free.json"
+        path = f"results/reader_{verifier}_eval_{which}_fused2_free.json"
         data = next((d for d in (f"data/liver_k30_{which}_fused2_free/eval.jsonl",
                                  f"data/liver_k30_{which}_fused2_free/s/eval_{which}_fused2_free.jsonl") if os.path.exists(d)), None)
         if not (os.path.exists(path) and data):
@@ -280,7 +291,7 @@ def label_free_liver():
     return out
 
 
-def mimic_densenet(run="cxr_focal_wmu", glob="densenet121"):
+def mimic_densenet(run=PER, glob="densenet121"):
     """PER + DenseNet-121 on the MIMIC-CXR test split, fixed rule: equal-weight average of the two rank-normalised
     image scores (lesion = nodule or mass, every candidate read), as in score_cxr_focal_mimic.py."""
     from score_cxr_focal_mimic import image_scores, labels, ranks, read
@@ -306,13 +317,13 @@ def cxr_sources():
     b = boxes("cxdet")
     bs = b[b.split == "test"]
     out = {}
-    for name, stem, k in (("patchcore", "patchcore", 30), ("patchcore45", "patchcore45", 45), ("random30", "random", 30),
-                          ("random45", "random45", 45), ("grid", "grid", 1000)):
-        path = f"{R}/cxr_focal_wmu/{stem}_cxdet_test.jsonl"
+    for name, stem, k in (("patchcore", "patchcore", 30), ("patchcore45", "patchcore45", 45),
+                          ("random45", "random45s", 45), ("grid", "grid", 1000)):   # random45s: per-image crc32 seeds
+        path = f"{R}/{PER}/{stem}_cxdet_test.jsonl"
         if os.path.exists(path):
             res = evaluate(rows_of(path), bs, TYPES, ks=(k,), rules=("max-p",))
             out[name] = {m: float(res[m].mean()) for m in ("AUROC", "hit", "LROC")}
-    path = f"{R}/cxr_focal_wmu/wmu_cxdet_test.jsonl"     # no verifier: the world-model score of the union list
+    path = f"{R}/{PER}/wmu_cxdet_test.jsonl"     # no verifier: the world-model score of the union list
     rows = rows_of(path)
     for r in rows:
         for t in TYPES:
@@ -334,9 +345,12 @@ def main():
     out["sweeps"] = sweeps()
     out["lung_ablation"] = lung_ablation()
     out["course"] = course()
-    out["label_free"] = {"liver": label_free_liver(), "course": out["course"]["label_free"]}
+    out["label_free"] = {"liver": label_free_liver(), "course": out["course"]["label_free"],
+                         "liver_same": label_free_liver("q8_liver_t08h3_on_free"),
+                         "course_same": out["course"]["label_free_same"]}
     out["mimic"] = {"per_densenet": mimic_densenet()}
     out["cxr_sources"] = cxr_sources()
+    out["cxr_aug"] = json.load(open("results/cxr_aug_choice.json"))     # choose_cxr_aug.py
     json.dump(out, open("results/supp_tables.json", "w"), indent=1, default=float)
     print(json.dumps({k: (list(v)[:12] if isinstance(v, dict) else len(v)) for k, v in out.items()}, indent=1))
 

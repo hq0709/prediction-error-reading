@@ -8,20 +8,21 @@ import os
 
 import pandas as pd
 
+from choose_cxr_aug import chosen
 from cxr_recall import boxes
 from score_cxr_focal import evaluate
 
 R = "results/cxr_focal"
 TYPES = ("Nodule", "Mass")
 ROWS = [  # label, file, K
-    ("Faster R-CNN", f"{R}/cxr_detector/nih_test.jsonl", 1),
-    ("RetinaNet", f"{R}/cxr_retinanet/nih_test.jsonl", 1),
-    ("FCOS", f"{R}/cxr_fcos/nih_test.jsonl", 1),
+    ("Faster R-CNN", f"{R}/{chosen('Faster R-CNN')}/nih_test.jsonl", 1),       # augmentation: choose_cxr_aug.py
+    ("RetinaNet", f"{R}/{chosen('RetinaNet')}/nih_test.jsonl", 1),
+    ("FCOS", f"{R}/{chosen('FCOS')}/nih_test.jsonl", 1),
     ("YOLO11m", f"{R}/cxr_yolo11m/nih_test.jsonl", 1),
-    ("RT-DETRv2-R50", f"{R}/cxr_rtdetrv2/nih_test.jsonl", 1),
-    ("Deformable DETR", f"{R}/cxr_deformdetr/nih_test.jsonl", 1),
-    ("one-shot Qwen3-VL-8B (answer + point)", f"{R}/cxr_oneshot/nih_test.jsonl", 1),
-    ("both world models + reader trained on their addresses", f"{R}/cxr_focal_wmu/wmu_nih_test.jsonl", 60),
+    ("RT-DETRv2-R50", f"{R}/{chosen('RT-DETRv2-R50')}/nih_test.jsonl", 1),
+    ("Deformable DETR", f"{R}/{chosen('Deformable DETR')}/nih_test.jsonl", 1),
+    ("one-shot Qwen3-VL-8B (answer + point)", f"{R}/{chosen('one-shot Qwen3-VL-8B')}/nih_test.jsonl", 1),
+    ("both world models + reader trained on their addresses", f"{R}/{chosen('PER (ours)')}/wmu_nih_test.jsonl", 60),
     ("  ... + MIMIC report labels (silence negative)", f"{R}/cxr_focal_wmu_mil/wmu_nih_test.jsonl", 60),
     ("  ... + MIMIC report labels (stated findings)", f"{R}/cxr_focal_wmu_milpos/wmu_nih_test.jsonl", 60),
     ("  ... + MIMIC report labels (stated and seen)", f"{R}/cxr_focal_wmu_milgate/wmu_nih_test.jsonl", 60),

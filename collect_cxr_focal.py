@@ -10,19 +10,20 @@ import os
 
 import pandas as pd
 
+from choose_cxr_aug import chosen
 from cxr_recall import boxes
 from score_cxr_focal import TYPES, evaluate
 
 R = "results/cxr_focal"
 ROWS = [  # label, file, K, rule
-    ("Faster R-CNN (boxes)", f"{R}/cxr_detector/cxdet_test.jsonl", 1, "max-p"),
-    ("RetinaNet (boxes)", f"{R}/cxr_retinanet/cxdet_test.jsonl", 1, "max-p"),
-    ("FCOS (boxes)", f"{R}/cxr_fcos/cxdet_test.jsonl", 1, "max-p"),
+    ("Faster R-CNN (boxes)", f"{R}/{chosen('Faster R-CNN')}/cxdet_test.jsonl", 1, "max-p"),   # augmentation on/off:
+    ("RetinaNet (boxes)", f"{R}/{chosen('RetinaNet')}/cxdet_test.jsonl", 1, "max-p"),         # choose_cxr_aug.py
+    ("FCOS (boxes)", f"{R}/{chosen('FCOS')}/cxdet_test.jsonl", 1, "max-p"),
     ("YOLO11m (boxes)", f"{R}/cxr_yolo11m/cxdet_test.jsonl", 1, "max-p"),
-    ("RT-DETRv2-R50 (boxes)", f"{R}/cxr_rtdetrv2/cxdet_test.jsonl", 1, "max-p"),
-    ("Deformable DETR (boxes)", f"{R}/cxr_deformdetr/cxdet_test.jsonl", 1, "max-p"),
-    ("one-shot Qwen3-VL-8B (answer + point)", f"{R}/cxr_oneshot/cxdet_test.jsonl", 1, "max-p"),
-    ("both world models + reader trained on their addresses", f"{R}/cxr_focal_wmu/wmu_cxdet_test.jsonl", 60, "max-p"),
+    ("RT-DETRv2-R50 (boxes)", f"{R}/{chosen('RT-DETRv2-R50')}/cxdet_test.jsonl", 1, "max-p"),
+    ("Deformable DETR (boxes)", f"{R}/{chosen('Deformable DETR')}/cxdet_test.jsonl", 1, "max-p"),
+    ("one-shot Qwen3-VL-8B (answer + point)", f"{R}/{chosen('one-shot Qwen3-VL-8B')}/cxdet_test.jsonl", 1, "max-p"),
+    ("both world models + reader trained on their addresses", f"{R}/{chosen('PER (ours)')}/wmu_cxdet_test.jsonl", 60, "max-p"),
     ("  ... + hard negatives", f"{R}/cxr_focal_wmu_hard/wmu_cxdet_test.jsonl", 60, "max-p"),
     ("  ... + MIMIC report labels (silence negative)", f"{R}/cxr_focal_wmu_mil/wmu_cxdet_test.jsonl", 60, "max-p"),
     ("  ... + MIMIC report labels (stated findings)", f"{R}/cxr_focal_wmu_milpos/wmu_cxdet_test.jsonl", 60, "max-p"),

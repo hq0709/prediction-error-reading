@@ -7,6 +7,8 @@ Evaluation rows are written in the focal reader's format (one "address" per imag
 P(yes) for that finding), so score_cxr_focal.py scores both alike.
 
     CUDA_VISIBLE_DEVICES=1 python train_cxr_oneshot.py --out runs_reader/cxr_oneshot
+With --aug, every training radiograph is jittered as the detector baselines' are (cxr_aug.py); the presence answers and
+the pointing targets are taken from the jittered boxes.
 """
 import argparse
 import gc
@@ -23,6 +25,7 @@ from peft import LoraConfig, PeftModel, get_peft_model
 from PIL import Image
 from transformers import AutoModelForImageTextToText, AutoProcessor
 
+from cxr_aug import augment
 from cxr_balance import balanced
 from cxr_recall import boxes
 from perr.cxr import CACHE
@@ -48,9 +51,10 @@ class Codec:
         content = [{"type": "image"}, {"type": "text", "text": q}]
         return self.proc.apply_chat_template([{"role": "user", "content": content}], tokenize=False, add_generation_prompt=True)
 
-    def ask(self, keys, answers):
+    def ask(self, keys, answers, ims=None):
         q = ASK + "\n" + "\n".join(f"{SHORT[t]}: yes or no?" for t in TYPES)
-        enc = self.proc(text=[self.prompt(q)] * len(keys), images=[image(k) for k in keys], return_tensors="pt", padding=True)
+        enc = self.proc(text=[self.prompt(q)] * len(keys), images=ims or [image(k) for k in keys], return_tensors="pt",
+                        padding=True)
         ids, pos = [], []
         for a in answers:
             i, p = [], []
@@ -62,8 +66,8 @@ class Codec:
             ids.append(i); pos.append(p)
         return self._append(enc, ids), pos
 
-    def point(self, keys, types, targets=None):
-        enc = self.proc(text=[self.prompt(POINT.format(SHORT[t])) for t in types], images=[image(k) for k in keys],
+    def point(self, keys, types, targets=None, ims=None):
+        enc = self.proc(text=[self.prompt(POINT.format(SHORT[t])) for t in types], images=ims or [image(k) for k in keys],
                         return_tensors="pt", padding=True)
         if targets is None:
             return enc
@@ -99,6 +103,18 @@ def targets_of(b, geo_keys):
                 r = bt.loc[(bt.w * bt.h).idxmax()]
                 out[k][t] = (int(round((r.x + r.w / 2) / 512 * 1000)), int(round((r.y + r.h / 2) / 512 * 1000)))
     return out
+
+
+def jittered(k, bb, rng):
+    """cxr_aug.augment on one training radiograph: (image, presence answers, {type: target}) from the moved boxes."""
+    img, moved = augment(np.load(f"{CACHE}/{k}.npy"), bb.get(k, []), rng)
+    tg = {}
+    for t in TYPES:
+        bt = [x for x in moved if x["finding"] == t]
+        if bt:
+            r = max(bt, key=lambda x: x["w"] * x["h"])
+            tg[t] = (int(round((r["x"] + r["w"] / 2) / 512 * 1000)), int(round((r["y"] + r["h"] / 2) / 512 * 1000)))
+    return Image.fromarray(img).convert("RGB"), [int(t in tg) for t in TYPES], tg
 
 
 def forward(model, enc):
@@ -172,6 +188,7 @@ def main():
     ap.add_argument("--rank", type=int, default=16)
     ap.add_argument("--train-keys", default=None, help="only these training images (few-box settings)")
     ap.add_argument("--balance", action="store_true", help="class-balanced epochs (cxr_balance.py)")
+    ap.add_argument("--aug", action="store_true", help="scale, shift and intensity jitter of the training images (cxr_aug.py)")
     ap.add_argument("--score-sets", action="store_true", help="MIMIC validate/test and NIH with the trained adapter")
     a = ap.parse_args()
     random.seed(0); torch.manual_seed(0)
@@ -192,6 +209,9 @@ def main():
     test_keys = sorted(g[g.split == "test"].key)
     tg = targets_of(b, tr_keys + val_keys + test_keys)
     lab = {k: [int(t in tg[k]) for t in TYPES] for k in tg}
+    rng = np.random.default_rng(0) if a.aug else None
+    bb = {k: [{"finding": r.finding, "x": r.x, "y": r.y, "w": r.w, "h": r.h} for r in g.itertuples() if r.finding in TYPES]
+          for k, g in b[b.key.isin(set(tr_keys))].groupby("key")} if a.aug else {}
     if a.balance:
         tr_keys = balanced(tr_keys, lambda k: any(lab[k]))
     print(f"train {len(tr_keys)}, validation {len(val_keys)}, test {len(test_keys)} images", flush=True)
@@ -230,14 +250,25 @@ def main():
             subs = [ch[i:i + mb] for i in range(0, len(ch), mb)]
             if kind == "ask":
                 n_tot = float(len(ch) * len(TYPES))
-            else:
+            elif rng is None:
                 encs = [codec.point([k for k, _ in sb], [t for _, t in sb], [tg[k][t] for k, t in sb]) for sb in subs]
                 n_tot = float(sum(int(e["target_mask"].sum()) for e in encs))     # answer tokens of the whole batch
+            else:                               # a jittered image whose box left the canvas keeps the original
+                encs = []
+                for sb in subs:
+                    js = [jittered(k, bb, rng) for k, _ in sb]
+                    ims = [j[0] if t in j[2] else image(k) for j, (k, t) in zip(js, sb)]
+                    tgs = [j[2][t] if t in j[2] else tg[k][t] for j, (k, t) in zip(js, sb)]
+                    encs.append(codec.point([k for k, _ in sb], [t for _, t in sb], tgs, ims))
+                n_tot = float(sum(int(e["target_mask"].sum()) for e in encs))
             loss = 0.0
             for si, sb in enumerate(subs):
                 if kind == "ask":
-                    ans = [lab[k] for k in sb]
-                    enc, pos = codec.ask(sb, ans)
+                    ans, ims = [lab[k] for k in sb], None
+                    if rng is not None:
+                        js = [jittered(k, bb, rng) for k in sb]
+                        ans, ims = [j[1] for j in js], [j[0] for j in js]
+                    enc, pos = codec.ask(sb, ans, ims)
                     lg, n, _ = forward(model, enc)
                     pos = torch.tensor([[n + p for p in q] for q in pos], device=lg.device)
                     lg = lg[torch.arange(len(sb))[:, None], pos - 1].float()

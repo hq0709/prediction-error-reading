@@ -6,6 +6,7 @@ domain, smoothing sigma, sign, suppression radius), PatchCore, random thorax poi
     python cxr_coverage.py cxdet train
 """
 import sys
+import zlib
 from multiprocessing import Pool
 
 import numpy as np
@@ -37,7 +38,7 @@ def placements(key):
             out[f"wm_s{sg}_{nm}_radiograph"] = peaks(E, V, k=8, nms=40)
     pc = ndi.zoom(np.load(f"{ROOT}/cache/cxr_maps/patchcore/{key}.npy").astype(np.float32), 512 / 37, order=1)
     out["patchcore_nms64"] = peaks(pc, D, k=8, nms=64)
-    rng = np.random.default_rng(abs(hash(key)) % 2 ** 32)
+    rng = np.random.default_rng(zlib.crc32(key.encode()))
     out["random_nms64"] = peaks(rng.random((512, 512)).astype(np.float32), D, k=8, nms=64)
     rows, cols = np.nonzero(img.any(1))[0], np.nonzero(img.any(0))[0]
     side = 0.2 * max(rows.max() - rows.min() + 1, cols.max() - cols.min() + 1)

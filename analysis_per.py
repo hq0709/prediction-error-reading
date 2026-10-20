@@ -8,7 +8,7 @@ and the AUROC of that score for separating hits from misses.
 Final configurations: lung, label-free world model + reader q8_ctxfree_nomeas, WM x reader, K = 10 (Set 1, Set 2);
 liver, two-sided fused list + reader q8_liver_t08h3, max-p, K = 30 (MSD evaluation half, HCC-TACE-Seg); disease course,
 prior findings + world model top 10 + reader q8_course_vis, max-p (pairs with a target); radiographs, both world models'
-60 addresses + reader cxr_focal_wmu, max-p, per focal finding among positive ChestX-Det test images.
+60 addresses + the kept full-data reader (choose_cxr_aug.py), max-p, per focal finding among positive ChestX-Det test images.
 
     python analysis_per.py            # writes results/analysis_per.json
 """
@@ -89,8 +89,10 @@ def course(name="q8_course_vis", data="data/course_reader", k=10):
     return summary(cases)
 
 
-def radiograph(path="results/cxr_focal/cxr_focal_wmu/wmu_cxdet_test.jsonl", k=60):
+def radiograph(path=None, k=60):
+    from choose_cxr_aug import chosen
     from cxr_recall import boxes
+    path = path or f"results/cxr_focal/{chosen('PER (ours)')}/wmu_cxdet_test.jsonl"
     b = boxes("cxdet")
     rows = [r for r in map(json.loads, open(path)) if r["src"] == "wm" and r["rank"] < k]
     by = defaultdict(list)

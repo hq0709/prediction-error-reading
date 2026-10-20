@@ -11,6 +11,7 @@ import os
 
 import pandas as pd
 
+from choose_cxr_aug import METHODS as AUG, chosen
 from cxr_recall import boxes
 from score_cxr_focal import TYPES, evaluate
 
@@ -35,6 +36,8 @@ def main():
     for label, run, fn, k in METHODS:
         for bud in BUDGETS:
             path = f"{R}/{run}{'' if bud == 100 else f'_b{bud}bal'}/{fn}"       # class-balanced epochs (cxr_balance.py)
+            if label in AUG:                                    # augmentation on or off by validation (choose_cxr_aug.py)
+                path = f"{R}/{chosen(label, bud)}/{fn}"
             if not os.path.exists(path):
                 continue
             rows = [json.loads(l) for l in open(path)]

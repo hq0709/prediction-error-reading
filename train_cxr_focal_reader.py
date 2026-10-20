@@ -12,6 +12,7 @@ gives no row (only stated findings and stated absences do), and with --mil-gate 
 the previous reader's probability there is at least g. Validation: mean
 address-level AUROC over the four findings on all addresses of the held-out images; the best epoch's adapter scores
 every address of the evaluation sets (data/cxr_focal/<proposer>/<set>.jsonl) into results/cxr_focal/<name>/<set>.jsonl.
+With --aug, every training view is jittered as the detector baselines' images are (cxr_aug.py): see augment_view.
 
     CUDA_VISIBLE_DEVICES=0 python train_cxr_focal_reader.py --out runs_reader/cxr_focal
     CUDA_VISIBLE_DEVICES=0 python train_cxr_focal_reader.py --out runs_reader/cxr_focal --score-only wm/nih_test wm/mimic_test
@@ -43,6 +44,23 @@ def load(path):
     return [json.loads(l) for l in open(path)]
 
 
+def augment_view(im, rng):
+    """cxr_aug.py's scale and intensity jitter on a rendered view: both panels are zoomed about their centres by one
+    s ~ U(0.9, 1.1), as if both crop sides were scaled by 1/s (the outline scales with the context crop, and pixels from
+    outside the crop are black); the place stays at the centre, so there is no translation. Then contrast and brightness
+    jitter up to 10 %. No flips."""
+    w, h = im.size
+    s = rng.uniform(0.9, 1.1)
+    c = (h - 1) / 2
+    out = Image.new("RGB", (w, h))
+    for x0 in range(0, w, h):
+        p = im.crop((x0, 0, x0 + h, h)).transform((h, h), Image.AFFINE, (1 / s, 0, c - c / s, 0, 1 / s, c - c / s),
+                                                   resample=Image.BILINEAR, fillcolor=(0, 0, 0))
+        out.paste(p, (x0, 0))
+    a = (np.asarray(out, dtype=np.float32) - 127.5) * rng.uniform(0.9, 1.1) + 127.5 + rng.uniform(-0.1, 0.1) * 255
+    return Image.fromarray(np.clip(a, 0, 255).astype(np.uint8))
+
+
 class Codec:
     def __init__(self, proc):
         self.proc, self.tok = proc, proc.tokenizer
@@ -62,9 +80,11 @@ class Codec:
             ids += self.nl
         return ids, pos
 
-    def batch(self, rows, answers):
-        enc = self.proc(text=[self.text] * len(rows), images=[Image.open(r["view"]).convert("RGB") for r in rows],
-                        return_tensors="pt", padding=True)
+    def batch(self, rows, answers, rng=None):
+        ims = [Image.open(r["view"]).convert("RGB") for r in rows]
+        if rng is not None:
+            ims = [augment_view(im, rng) for im in ims]
+        enc = self.proc(text=[self.text] * len(rows), images=ims, return_tensors="pt", padding=True)
         blocks = [self.answer_ids(a) for a in answers]
         add = torch.tensor([b[0] for b in blocks])
         n = enc["input_ids"].shape[1]
@@ -172,10 +192,12 @@ def main():
     ap.add_argument("--hard-from", default=None, help="a reader's scored ChestX-Det training addresses (hard negatives)")
     ap.add_argument("--hard", type=int, default=0, help="per image and epoch, this many of the --neg negatives are the "
                                                          "addresses that reader scored highest")
+    ap.add_argument("--aug", action="store_true", help="scale and intensity jitter of the training views (augment_view)")
     ap.add_argument("--pos-share", type=float, default=0.0, help="class-balanced epochs: positive rows are repeated until "
                     "they make up at least this share of each epoch (0.16 = their share with every box; a no-op there)")
     a = ap.parse_args()
     random.seed(0); torch.manual_seed(0)
+    rng = np.random.default_rng(0) if a.aug else None
     name = os.path.basename(a.out.rstrip("/"))
     proc = AutoProcessor.from_pretrained(Q8)
     proc.tokenizer.padding_side = "left"
@@ -244,7 +266,7 @@ def main():
             for ms in range(0, len(chunk), a.micro or a.bs):        # micro-batches: the same loss and step, less memory
                 sub = chunk[ms:ms + (a.micro or a.bs)]
                 ans = [r["y"] for r in sub]
-                enc, pos = codec.batch(sub, ans)
+                enc, pos = codec.batch(sub, ans, rng)
                 enc = enc.to(model.device)
                 lg = model(**enc).logits[torch.arange(len(sub))[:, None], pos.to(model.device) - 1].float()
                 tgt = torch.tensor(ans, device=model.device)

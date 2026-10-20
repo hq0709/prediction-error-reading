@@ -11,6 +11,7 @@ A box is hit at K if one of the top-K addresses (square suppression) lies inside
 """
 import json
 import sys
+import zlib
 from multiprocessing import Pool
 
 import numpy as np
@@ -73,7 +74,7 @@ def work(key):
     V = valid_region(img)
     doms = {d: V if spec is None else search_domain(key, V, *spec) for d, spec in DOMAINS.items()}
     res = {"key": key, "area": {d: int(m.sum()) for d, m in doms.items()}}
-    rng = np.random.default_rng(abs(hash(key)) % (2 ** 32))
+    rng = np.random.default_rng(zlib.crc32(key.encode()))
     for name, W in maps(key).items():
         for d, D in doms.items():
             res[(name, d)] = peaks(W, D, k=20, nms=NMS)
