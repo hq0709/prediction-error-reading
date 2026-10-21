@@ -2,10 +2,11 @@
 over the four focal findings on the same held-out tenth of the ChestX-Det training images:
 
   detectors (train_cxr_detector.py, train_cxr_detr.py; cxr_aug.py)   best checkpoint's score ("best validation" in the log)
-  one-step Qwen3-VL-8B (train_cxr_oneshot.py --aug)                  presence AUROC of the best epoch (log)
+  one-step Qwen3-VL-8B (train_cxr_oneshot.py --aug)                  presence AUROC of the kept epoch, ties one half
+                                                                     (<run>_tie/cxdet_val.jsonl; else the training log)
   PER verifier (train_cxr_focal_reader.py --aug)                     max-p over the image's candidates, from the scored
                                                                      held-out tenth (wmu_cxdet_val.jsonl); the run's own
-                                                                     epoch is chosen by candidate-level AUROC (best.json)
+                                                                     epoch is chosen by the same image-level AUROC
 
 YOLO11m keeps its library recipe. A missing augmented run leaves the plain run in place (reported).
 
@@ -32,7 +33,27 @@ def from_log(pattern):
 
 
 det = from_log(r"best validation ([0-9.]+)")
-oneshot = from_log(r"validation mean presence AUROC ([0-9.]+)")
+oneshot_log = from_log(r"validation mean presence AUROC ([0-9.]+)")
+
+
+def oneshot(run, log):
+    """Mean presence AUROC of a one-step run on the held-out tenth with ties counted one half, as for the other methods:
+    from its kept adapter's re-read answers (train_cxr_oneshot.py --rescore cxdet_val -> results/cxr_focal/<run>_tie/);
+    the training log's value, which counts ties against the run, when that file is missing."""
+    path = f"results/cxr_focal/{run}_tie/cxdet_val.jsonl"
+    if not os.path.exists(path):
+        return oneshot_log(log)
+    import numpy as np
+    from cxr_recall import boxes
+    from score_cxr_focal import TYPES, auroc
+    b = boxes("cxdet")
+    rows = [json.loads(line) for line in open(path)]
+    out = []
+    for j, t in enumerate(TYPES):
+        pos = set(b[b.finding == t].key)
+        rt = [r for r in rows if r["i"] == j]
+        out.append(auroc(np.array([r[f"p_{t}"] for r in rt]), np.array([r["key"] in pos for r in rt])))
+    return float(np.nanmean(out))
 
 
 def verifier(run):
@@ -76,9 +97,9 @@ METHODS = {
     "Deformable DETR": ("cxr_deformdetr", "cxr_deformdetraug",
                         lambda run, b, aug: det(f"logs/aug_deformdetraug_b{b}.log" if aug else
                                                 ("logs/tr_cxr_deformdetr.log" if b == 100 else f"logs/bal_deformdetr_b{b}.log"))),
-    "one-shot Qwen3-VL-8B": ("cxr_oneshot", "cxr_oneshotaug",
-                             lambda run, b, aug: oneshot(f"logs/os_aug_b{b}.log" if aug else
-                                                         ("logs/tr_cxr_oneshot.log" if b == 100 else f"logs/bal_oneshot_b{b}.log"))),
+    # one-step runs retrained so that their epochs, like every other method's, are chosen with ties counted one half
+    "one-shot Qwen3-VL-8B": ("cxr_oneshott", "cxr_oneshottaug",
+                             lambda run, b, aug: oneshot(run, f"logs/ota_b{b}.log" if aug else f"logs/ot_b{b}.log")),
     "PER (ours)": (*PER_RUNS, lambda run, b, aug: verifier(run)),
 }
 

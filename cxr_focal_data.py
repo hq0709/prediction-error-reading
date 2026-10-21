@@ -71,6 +71,9 @@ def addresses(key):
         return out[:len(lists) * K]
     elif PROPOSER == "patchcore":
         W = ndi.zoom(np.load(f"{ROOT}/cache/cxr_maps/patchcore/{key}.npy").astype(np.float32), 512 / 37, order=1)
+    elif PROPOSER.startswith("map:"):                              # any model's anomaly map over the 512 canvas
+        M = np.load(f"{ROOT}/cache/cxr_maps/{PROPOSER[4:]}/{key}.npy").astype(np.float32)     # (H, W), higher = more anomalous
+        W = ndi.zoom(M, (512 / M.shape[0], 512 / M.shape[1]), order=1)
     elif PROPOSER == "grid":                                       # every place: a 25 px lattice over the thorax
         return [(r, c, 0.0) for r in range(12, 512, 25) for c in range(12, 512, 25) if D[r, c]]
     else:
@@ -151,7 +154,8 @@ def main():
     global PROPOSER, NAME, SIGMA, NMS, K, SIGN
     ap = argparse.ArgumentParser()
     ap.add_argument("which", choices=["cxdet", "nih", "mimic", "mimic_train"])
-    ap.add_argument("--proposer", choices=["wm", "wmh", "wmu", "wmu3", "wmuraw", "wmur", "wmr", "wmn", "wma", "patchcore", "random", "grid"], default="wm")
+    ap.add_argument("--proposer", default="wm", help="wm, wmh, wmu, wmu3, wmuraw, wmur, wmr, wmn, wma, patchcore, random, grid, "
+                    "or map:<name> for the anomaly maps in cache/cxr_maps/<name>/<key>.npy (other models of normal appearance)")
     ap.add_argument("--split", default=None, help="only this split (e.g. test)")
     ap.add_argument("--name", default=None, help="output name of a sweep variant (default: the proposer)")
     ap.add_argument("--sigma", type=float, default=2.0, help="smoothing of the world-model error (px; sweep)")
@@ -160,7 +164,9 @@ def main():
     ap.add_argument("--keys", default=None, help="only these images (e.g. the reader's held-out tenth of ChestX-Det train)")
     ap.add_argument("--sign", type=int, default=1, choices=(1, 0), help="1: brighter than expected; 0: either sign (sweep)")
     a = ap.parse_args()
-    PROPOSER, NAME, SIGMA, NMS, K, SIGN = a.proposer, a.name or a.proposer, a.sigma, a.nms, a.k, a.sign
+    assert a.proposer.startswith("map:") or a.proposer in ("wm", "wmh", "wmu", "wmu3", "wmuraw", "wmur", "wmr", "wmn", "wma",
+                                                           "patchcore", "random", "grid"), a.proposer
+    PROPOSER, NAME, SIGMA, NMS, K, SIGN = a.proposer, a.name or a.proposer.replace("map:", ""), a.sigma, a.nms, a.k, a.sign
     keep = set(open(a.keys).read().split()) if a.keys else None
     its = [it for it in items(a.which) if (a.split is None or it[0] == a.split) and (keep is None or it[1][0] in keep)]
     with Pool(48) as p:

@@ -121,7 +121,7 @@ class YesNoHead:
     keep about three significant digits, which leaves ~100 distinct probabilities and ties among an image's
     candidates; "bf16" reproduces those rounded logits."""
 
-    def __init__(self, model, codec, readout="fp32"):
+    def __init__(self, model, codec, readout="bf16"):
         self.head = model.get_output_embeddings()
         self.w = self.head.weight[[codec.yes, codec.no]].float()
         self.codec, self.readout, self.h = codec, readout, None
@@ -142,7 +142,7 @@ class YesNoHead:
 
 
 @torch.no_grad()
-def score(model, codec, rows, bs=32, readout="fp32"):
+def score(model, codec, rows, bs=32, readout="bf16"):
     """P(yes) per finding, two passes (answers filled greedily, then re-read), as train_cxr_ml.score."""
     model.eval()
     out = []
@@ -204,7 +204,7 @@ def mimic_rows(path, silence="negative", gate=0.0):
     return out
 
 
-def write_scores(model, codec, name, sets, readout="fp32"):
+def write_scores(model, codec, name, sets, readout="bf16"):
     for s in sets:
         rows = load(f"{DATA}/{s}.jsonl")
         p = score(model, codec, rows, readout=readout)
@@ -246,7 +246,7 @@ def main():
                          "model's criterion)")
     ap.add_argument("--pos-share", type=float, default=0.0, help="class-balanced epochs: positive rows are repeated until "
                     "they make up at least this share of each epoch (0.16 = their share with every box; a no-op there)")
-    ap.add_argument("--readout", default="fp32", choices=("fp32", "bf16"),
+    ap.add_argument("--readout", default="bf16", choices=("bf16", "fp32"),
                     help="yes/no logits in float32 from the final hidden state, or the rounded bf16 logits (YesNoHead)")
     ap.add_argument("--res-name", default=None, help="results/cxr_focal/<res-name>/ instead of the run directory's name")
     a = ap.parse_args()

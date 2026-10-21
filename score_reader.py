@@ -44,7 +44,10 @@ def table(rows, ks=(5, 10, 20, 30)):
     return "\n".join(lines)
 
 
-def make_hf(model_dir, variant="full", bs=32, device_map="single"):
+def make_hf(model_dir, variant="full", bs=32, device_map="single", readout="bf16"):
+    """readout "fp32": the yes/no rows of the output projection applied in float32 to the final hidden state (the
+    full-vocabulary normalisation cancels in P(yes) / (P(yes) + P(no))); "bf16": the rounded bf16 logits, which
+    leave ~100 distinct probabilities (train_cxr_focal_reader.YesNoHead)."""
     import torch
     from PIL import Image
     from transformers import AutoModelForImageTextToText, AutoProcessor
@@ -55,6 +58,11 @@ def make_hf(model_dir, variant="full", bs=32, device_map="single"):
     ids = lambda words: sorted({proc.tokenizer.encode(w, add_special_tokens=False)[0] for w in words})
     yes, no = ids(YES), ids(NO)
     nested = "Gemma" in type(proc).__name__      # Gemma 3 wants one image list per prompt
+    head = model.get_output_embeddings()
+    w = head.weight[yes + no].float()
+    cap = {}
+    if readout == "fp32":
+        head.register_forward_hook(lambda m, i, o: cap.__setitem__("h", i[0]))
 
     @torch.no_grad()
     def score(rows):
@@ -68,8 +76,13 @@ def make_hf(model_dir, variant="full", bs=32, device_map="single"):
             if nested:
                 imgs = [[im] for im in imgs]
             enc = proc(text=texts, images=imgs, return_tensors="pt", padding=True).to(model.device)
-            pr = model(**enc).logits[:, -1, :].float().softmax(-1)
-            py, pn = pr[:, yes].sum(-1), pr[:, no].sum(-1)
+            lg = model(**enc).logits[:, -1, :]
+            if readout == "fp32":
+                pr = (cap["h"][:, -1, :].float() @ w.T).softmax(-1)
+                py, pn = pr[:, :len(yes)].sum(-1), pr[:, len(yes):].sum(-1)
+            else:
+                pr = lg.float().softmax(-1)
+                py, pn = pr[:, yes].sum(-1), pr[:, no].sum(-1)
             out += (py / (py + pn).clamp_min(1e-9)).tolist()
         return out
 
@@ -116,8 +129,10 @@ if __name__ == "__main__":
     ap.add_argument("files", nargs="+")
     ap.add_argument("--variant", choices=list(VARIANTS), default="full")
     ap.add_argument("--device-map", default="single")
+    ap.add_argument("--readout", default="bf16", choices=("bf16", "fp32"), help="yes/no logits (make_hf)")
     a = ap.parse_args()
-    score = make_hf(a.spec, a.variant, device_map=a.device_map) if a.backend == "hf" else make_api(a.spec, a.variant)
+    score = (make_hf(a.spec, a.variant, device_map=a.device_map, readout=a.readout) if a.backend == "hf"
+             else make_api(a.spec, a.variant))
     for path in a.files:
         rows = [json.loads(l) for l in open(path)]
         ps = score(rows)
