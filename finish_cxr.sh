@@ -30,5 +30,5 @@ $PP collect_supp.py > logs/finish_supp.log 2>&1 && echo "collect_supp done"
 cd /raid/home/CAMCA/hj880/perr-paper
 python3 scripts/update_curves_json.py
 eval "$(/raid/home/CAMCA/hj880/miniconda3/bin/conda shell.bash hook)" && conda activate base
-python scripts/plot_curves.py figures scripts/figures/qa > /dev/null 2>&1 && echo "curves replotted"
+python scripts/figures/fig3_candidates/plot_fig3_cvpr.py --variants 2 --no-qa > /dev/null 2>&1 && cp scripts/figures/fig3_candidates/fig3_cvpr_2.pdf figures/label_efficiency.pdf && echo "label-efficiency figure replotted"
 python3 scripts/make_supp_tables.py | grep -v "^MATCH" | tail -n 30
