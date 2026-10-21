@@ -169,8 +169,17 @@ def sweeps():
                             ("test", f"{R}/{PER}/{name if name != 'hp_final' else 'wmu'}_cxdet_test.jsonl")):
             if os.path.exists(path):
                 bs = b[b.split == ("train" if split == "dev" else "test")]
-                res = evaluate(rows_of(path), bs, TYPES, ks=(k,), rules=("max-p",))
+                rows = rows_of(path)
+                res = evaluate(rows, bs, TYPES, ks=(k,), rules=("max-p",))
                 ent[split] = {m: float(res[m].mean()) for m in ("AUROC", "hit", "LROC")}
+                # candidate recall (selection criterion): positive image-finding pairs with a candidate in a box of that
+                # finding among the first k, and the mean number of candidates per image
+                by = defaultdict(list)
+                for r in rows:
+                    by[r["key"]].append(r)
+                pairs = [(key, t) for t in TYPES for key in bs[(bs.finding == t) & bs.key.isin(set(by))].key.unique()]
+                ent[split]["recall"] = float(np.mean([any(r[t] for r in by[key] if r["rank"] < k) for key, t in pairs]))
+                ent[split]["cand"] = float(np.mean([sum(r["rank"] < k for r in v) for v in by.values()]))
         rad[name] = ent
     out["radiograph"] = rad
     # liver: Task08 development cases, MSD evaluation half and HCC-TACE-Seg, reader q8_liver_t08h3, K = 30, max-p
