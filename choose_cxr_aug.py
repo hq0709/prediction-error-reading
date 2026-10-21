@@ -40,7 +40,10 @@ def verifier(run):
     image (the test readout), from its scored results/cxr_focal/<run>/wmu_cxdet_val.jsonl; the same image-level
     criterion as the detectors and the one-step model. (The run's own epoch was chosen by candidate-level AUROC.)"""
     path = f"results/cxr_focal/{run}/wmu_cxdet_val.jsonl"
-    if not os.path.exists(path):
+    if not os.path.exists(path):           # runs scored on test only: the image-level value logged at the kept epoch
+        best = f"runs_reader/{run}/best.json"
+        if os.path.exists(best) and os.path.isdir(f"results/cxr_focal/{run}"):
+            return json.load(open(best)).get("val_image_auroc")
         return None
     from cxr_recall import boxes
     from score_cxr_focal import TYPES, evaluate
@@ -52,6 +55,9 @@ def verifier(run):
 def run_name(base, bud):
     return base if bud == 100 else f"{base}_b{bud}bal"
 
+
+# PER verifier runs without and with augmentation (fractions: <run>_b<p>bal): three epochs, image-level checkpoint
+PER_RUNS = ("cxr_focal_e3", "cxr_focal_e3aug")
 
 # label: (plain run, augmented run, score of a run at a fraction)
 METHODS = {
@@ -73,7 +79,7 @@ METHODS = {
     "one-shot Qwen3-VL-8B": ("cxr_oneshot", "cxr_oneshotaug",
                              lambda run, b, aug: oneshot(f"logs/os_aug_b{b}.log" if aug else
                                                          ("logs/tr_cxr_oneshot.log" if b == 100 else f"logs/bal_oneshot_b{b}.log"))),
-    "PER (ours)": ("cxr_focal_wmu", "cxr_focal_wmuaug", lambda run, b, aug: verifier(run)),
+    "PER (ours)": (*PER_RUNS, lambda run, b, aug: verifier(run)),
 }
 
 

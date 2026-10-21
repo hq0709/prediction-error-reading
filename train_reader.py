@@ -21,9 +21,18 @@ from perr.reader_prompt import VARIANTS, prepare
 VARIANT = "full"
 
 
-def build(proc, row, answer=None):
-    """(chat text ending with the answer if given, image) for one candidate row."""
+def jitter(im, rng):
+    """Training augmentation (--aug): contrast and brightness jitter up to 10 % on the whole strip, as for the
+    radiograph verifier; no geometric change, so the marked address and the planes keep their layout."""
+    a = (np.asarray(im.convert("RGB"), dtype=np.float32) - 127.5) * rng.uniform(0.9, 1.1) + 127.5 + rng.uniform(-0.1, 0.1) * 255
+    return Image.fromarray(np.clip(a, 0, 255).astype(np.uint8))
+
+
+def build(proc, row, answer=None, rng=None):
+    """(chat text ending with the answer if given, image) for one candidate row; rng: training jitter."""
     im, q = prepare(row, VARIANT)
+    if rng is not None:
+        im = jitter(im, rng)
     msgs = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": q}]}]
     prompt = proc.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
     return prompt + (answer or ""), im
@@ -70,11 +79,13 @@ def main():
     ap.add_argument("--full-epochs", action="store_true", help="with --train-uids: every epoch as long as with all "
                     "training scans (the allowed scans' rows repeated, a fresh draw of negatives each time; validated "
                     "after every pass, so the checkpoint can stop as early as one pass)")
+    ap.add_argument("--aug", action="store_true", help="contrast and brightness jitter of the training strips")
     ap.add_argument("--device-map", default="single", help='"single" (one GPU) or "auto" (split a large model)')
     a = ap.parse_args()
     global VARIANT
     VARIANT = a.variant
     random.seed(0); torch.manual_seed(0)
+    rng = np.random.default_rng(0) if a.aug else None
     os.makedirs(a.out, exist_ok=True)
     proc = AutoProcessor.from_pretrained(a.model)
     proc.tokenizer.padding_side = "left"
@@ -130,7 +141,7 @@ def main():
         tot = 0.0
         for st in range(steps):
             chunk = batch_rows[st * a.bs:(st + 1) * a.bs]
-            texts, imgs = zip(*[build(proc, r, "yes" if r["label"] else "no") for r in chunk])
+            texts, imgs = zip(*[build(proc, r, "yes" if r["label"] else "no", rng) for r in chunk])
             enc = proc(text=list(texts), images=list(imgs), return_tensors="pt", padding=True).to(model.device)
             logits = model(**enc).logits[:, -2, :]          # position that predicts the answer token
             target = torch.tensor([yes_id if r["label"] else no_id for r in chunk], device=logits.device)
