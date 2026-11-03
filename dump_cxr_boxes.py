@@ -5,6 +5,7 @@ are compared with the world model at the same number of addresses.
     python dump_cxr_boxes.py frcnn runs_reader/cxr_detector            # torchvision (train_cxr_detector.py)
     python dump_cxr_boxes.py detr runs_reader/cxr_rtdetrv2              # transformers (train_cxr_detr.py)
     python dump_cxr_boxes.py yolo runs_reader/cxr_yolo11m               # ultralytics (train_cxr_yolo.py)
+    python dump_cxr_boxes.py fcos runs_reader/cxr_fcosaug chexloc       # CheXlocalize images -> <run name>_chexloc.json
 Writes results/cxr_boxes/<run name>.json: {key: [[score, row, col], ...]}.
 """
 import json
@@ -33,8 +34,9 @@ def nms_centres(rows, d=16):
 
 def main():
     kind, run = sys.argv[1], sys.argv[2].rstrip("/")
-    g = pd.read_csv("results/cxr_cxdet.csv")
-    keys = sorted(g[g.split == "test"].key)
+    which = sys.argv[3] if len(sys.argv) > 3 else "cxdet"           # cxdet (test split) or chexloc (build_chexloc.py)
+    g = pd.read_csv(f"results/cxr_{which}.csv")
+    keys = sorted(g[g.split == "test"].key) if which == "cxdet" else sorted(g.key)
     dev = torch.device("cuda")
     out = {}
     if kind in ("frcnn", "retinanet", "fcos"):
@@ -75,7 +77,8 @@ def main():
                 b, s = r.boxes.xyxy.cpu().numpy(), r.boxes.conf.cpu().numpy()
                 out[k] = nms_centres([(float(si), float((bi[1] + bi[3]) / 2), float((bi[0] + bi[2]) / 2)) for bi, si in zip(b, s)])
     os.makedirs("results/cxr_boxes", exist_ok=True)
-    json.dump(out, open(f"results/cxr_boxes/{os.path.basename(run)}.json", "w"))
+    tag = "" if which == "cxdet" else f"_{which}"
+    json.dump(out, open(f"results/cxr_boxes/{os.path.basename(run)}{tag}.json", "w"))
     print(os.path.basename(run), len(out), "images; median boxes per image", int(np.median([len(v) for v in out.values()])))
 
 

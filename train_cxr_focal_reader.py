@@ -41,6 +41,11 @@ QUESTION = ("Left: part of a frontal chest radiograph with one place outlined in
 QUESTION3 = ("Left: a frontal chest radiograph with one region outlined in yellow. Middle: that region, with one place "
              "outlined in yellow. Right: the outlined place enlarged. At the outlined place, answer yes or no for each "
              "finding below.")       # three-panel views (render_views3.py): the whole radiograph is added on the left
+QUESTION_EXPECT = ("Top row, what is there: left, part of a frontal chest radiograph with one place outlined in yellow; "
+                   "right, the outlined place enlarged. Bottom row: the same two views of the image a world model of "
+                   "normal radiographs expected there from the surroundings (normal anatomy it can predict, such as ribs "
+                   "and vessels, appears in both rows; what it could not predict appears only in the top row). At the "
+                   "outlined place, answer yes or no for each finding below.")   # 2 x 2 views (render_views_expect.py)
 
 
 def load(path):
@@ -74,6 +79,28 @@ def augment_view(im, rng):
     return Image.fromarray(np.clip(a, 0, 255).astype(np.uint8))
 
 
+def tta_view(im, spec):
+    """One deterministic test-time view (--tta-view): "id" the view as rendered; "s<f>" both panels zoomed about their
+    centres by f (augment_view's geometry with s fixed); "c<f>" contrast scaled by f about mid-grey (no brightness
+    shift). No flips (laterality)."""
+    if spec == "id":
+        return im
+    f = float(spec[1:])
+    if spec[0] == "s":
+        w, h = im.size
+        c = (h - 1) / 2
+        out = Image.new("RGB", (w, h))
+        for x0 in range(0, w, h):
+            p = im.crop((x0, 0, x0 + h, h)).transform((h, h), Image.AFFINE, (1 / f, 0, c - c / f, 0, 1 / f, c - c / f),
+                                                       resample=Image.BILINEAR, fillcolor=(0, 0, 0))
+            out.paste(p, (x0, 0))
+        return out
+    if spec[0] == "c":
+        a = (np.asarray(im, dtype=np.float32) - 127.5) * f + 127.5
+        return Image.fromarray(np.clip(a, 0, 255).astype(np.uint8))
+    raise ValueError(spec)
+
+
 class Codec:
     def __init__(self, proc):
         self.proc, self.tok = proc, proc.tokenizer
@@ -82,11 +109,12 @@ class Codec:
         self.lines = [self.tok.encode(f"{SHORT[t]}:", add_special_tokens=False) for t in TYPES]
         self.nl = self.tok.encode("\n", add_special_tokens=False)
         self.texts = {}
-        for panels, q in ((2, QUESTION), (3, QUESTION3)):     # the prompt follows the view: width / height panels
+        for panels, q in ((2, QUESTION), (3, QUESTION3), (1, QUESTION_EXPECT)):   # the prompt follows the view: width / height
             content = [{"type": "image"}, {"type": "text", "text": q + "\n" + "\n".join(f"{SHORT[t]}: yes or no?" for t in TYPES)}]
             self.texts[panels] = proc.apply_chat_template([{"role": "user", "content": content}], tokenize=False,
                                                           add_generation_prompt=True)
         self.text = self.texts[2]
+        self.view = None             # a test-time view (tta_view spec) applied when scoring; None: as rendered
 
     def answer_ids(self, answers):
         ids, pos = [], []
@@ -101,6 +129,8 @@ class Codec:
         ims = [Image.open(r["view"]).convert("RGB") for r in rows]
         if rng is not None:
             ims = [augment_view(im, rng) for im in ims]
+        elif self.view is not None:
+            ims = [tta_view(im, self.view) for im in ims]
         text = self.texts[round(ims[0].width / ims[0].height)]
         enc = self.proc(text=[text] * len(rows), images=ims, return_tensors="pt", padding=True)
         blocks = [self.answer_ids(a) for a in answers]
@@ -248,6 +278,8 @@ def main():
                     "they make up at least this share of each epoch (0.16 = their share with every box; a no-op there)")
     ap.add_argument("--readout", default="bf16", choices=("bf16", "fp32"),
                     help="yes/no logits in float32 from the final hidden state, or the rounded bf16 logits (YesNoHead)")
+    ap.add_argument("--tta-view", default=None, help="with --score-only: score one deterministic test-time view "
+                    "(tta_view: id, s<scale>, c<contrast>); write under --res-name")
     ap.add_argument("--res-name", default=None, help="results/cxr_focal/<res-name>/ instead of the run directory's name")
     a = ap.parse_args()
     random.seed(0); torch.manual_seed(0)
@@ -263,6 +295,7 @@ def main():
     base = load_base(a.base, a.load_4bit)
     if a.score_only is not None:
         model = PeftModel.from_pretrained(base, f"{a.out}/lora_best").eval()
+        codec.view = a.tta_view
         return write_scores(model, codec, name, a.score_only, a.readout)
 
     rows = load(f"{DATA}/{a.proposer}/cxdet_train.jsonl")
